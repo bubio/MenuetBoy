@@ -30,7 +30,7 @@ VM の画面はホストから撮れないため、VM 上の動作確認はユ�
 ```sh
 scripts/build.sh [rom] [rom_dir] # MenuetOS アプリをビルドし、VM の CD イメージを作り直す（要 brew install blink xorriso）
                                  # rom は ROM.GB として既定で起動、rom_dir の *.gb は 8.3 名（GAME.GB）で同じフォルダーに入る
-scripts/test.sh                  # コアを Mac 上でテスト（Blargg・Mooneye のテスト ROM、dmg-acid2/halt_bug 画面比較、440Hz トーン）
+scripts/test.sh                  # コアを Mac 上でテスト（Blargg・Mooneye のテスト ROM、dmg-acid2/halt_bug 画面比較、440Hz トーン、MBC3 RTC）
 scripts/test.sh tests/roms/02-interrupts.gb   # 1 本だけ実行
 ```
 
@@ -45,7 +45,7 @@ MenuetOS 上での動作確認は VM を再起動して CD の `/MENUETBOY/MENUE
 - `src/core/gb.inc` — 入口（`gb_reset` / `gb_run_frame` / `gb_set_button`）、タイマー、PPU のタイミングと STAT 割り込み
 - `src/core/cpu.inc` — SM83 インタプリタ。オペコード表 `op_table` から汎用ハンドラーへ分岐し、レジスタ番号はオペコードのビットから取り出す。メモリアクセスのたびに `cpu_read` / `cpu_write` / `cpu_idle` が 4 T サイクル分 `gb_tick` を進める（M サイクル単位のタイミング）
 - `src/core/ppu.inc` — HBlank に入るたびに 1 ライン描画（BG・ウィンドウ・オブジェクト）して `gb_lcd`（濃淡 0-3）に書く
-- `src/core/mmu.inc` — メモリマップ、MBC1/2/3/5、I/O レジスタ、OAM DMA の開始（転送は `gb_tick` で 1 M サイクル 1 バイト）
+- `src/core/mmu.inc` — メモリマップ、MBC1/2/3/5、I/O レジスタ、OAM DMA の開始（転送は `gb_tick` で 1 M サイクル 1 バイト）。MBC3 の RTC は `gb.inc` の `rtc_tick` がエミュレーター内の時間で進める（実時間・終了中の経過は反映しない）
 - `src/core/apu.inc` — サウンド。`gb_tick` はサイクルを溜めるだけで、レジスタアクセス時などに `apu_sync` で追いつき、48kHz ステレオを `apu_ring` に書く
 - `src/core/state.inc` — 全状態を `virtual at GB_STATE` で定義。フロントエンドが `GB_STATE`・`gb_rom`・`platform_serial` を用意する
 - `src/menuetboy.asm` — MenuetOS フロントエンド。先頭にアプリ内メモリマップ。補正した時計で 59.7fps に合わせて `gb_run_frame` を呼び、`gb_lcd` を 2 倍に拡大して syscall 7 で表示し、`apu_ring` を syscall 117 のダブルバッファに流す

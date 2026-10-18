@@ -33,6 +33,7 @@ MBC_3       = 3
 MBC_5       = 5
 
 CYCLES_PER_LINE  = 456
+CYCLES_PER_SEC   = 4194304
 CYCLES_PER_FRAME = 70224
 
 APU_RATE    = 48000               ; Output sample rate
@@ -79,6 +80,12 @@ virtual at GB_STATE
   mbc_bank_hi     dd ?
   rom_bank_mask   dd ?
   ram_size        dd ?
+  rtc_present     db ?            ; MBC3 with timer (cartridge types 0F, 10)
+  rtc_latch_prev  db ?            ; Last value written to 6000-7FFF
+  rtc_regs        rb 5            ; Counting S, M, H, DL, DH (bit 0 day bit 8,
+                                  ; bit 6 halt, bit 7 day carry)
+  rtc_latched     rb 5            ; Read through A000-BFFF (banks 08-0C)
+  rtc_cycles      dd ?            ; T-cycles into the current second
   rom_off0        dq ?            ; ROM offset mapped at 0000-3FFF
   rom_offn        dq ?            ; ROM offset mapped at 4000-7FFF
   ram_off         dq ?            ; Cartridge RAM offset mapped at A000-BFFF

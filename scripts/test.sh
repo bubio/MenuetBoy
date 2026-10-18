@@ -1,7 +1,7 @@
 #!/bin/sh
 # Run the emulator core against test ROMs on the host (no VM needed).
 #
-# Usage: scripts/test.sh [rom ...]   (default: tests/roms/*.gb, screen and tone tests)
+# Usage: scripts/test.sh [rom ...]   (default: tests/roms/*.gb, screen, tone and RTC tests)
 #
 # Requires: brew install blink
 set -eu
@@ -45,6 +45,14 @@ if [ $# -eq 0 ]; then
     blink -m "/SystemRoot$BUILD/harness" "/SystemRoot$BUILD/tone.gb" 60 \
         "/SystemRoot$BUILD/tone.pgm" "/SystemRoot$BUILD/tone.raw" >/dev/null || true
     if python3 "$ROOT/tests/sound_tone.py" check "$BUILD/tone.raw"; then
+        pass=$((pass + 1))
+    else
+        fail=$((fail + 1))
+    fi
+
+    printf '== MBC3 RTC\n'
+    python3 "$ROOT/tests/rtc_test.py" make "$BUILD/rtc.gb"
+    if blink -m "/SystemRoot$BUILD/harness" "/SystemRoot$BUILD/rtc.gb" 600; then
         pass=$((pass + 1))
     else
         fail=$((fail + 1))

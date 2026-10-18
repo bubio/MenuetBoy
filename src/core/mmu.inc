@@ -45,6 +45,11 @@ mem_read:
   .cart_ram:
     cmp   byte [ram_enable] , 0
     je    .unusable
+    cmp   byte [mbc_type] , MBC_3
+    jne   @f
+    test  byte [mbc_bank_hi] , 0x08
+    jnz   .rtc
+  @@:
     cmp   dword [ram_size] , 0
     je    .unusable
     cmp   byte [mbc_type] , MBC_2
@@ -59,6 +64,16 @@ mem_read:
     and   eax , 0x1FF
     movzx eax , byte [gb_cart_ram+rax]
     or    eax , 0xF0
+    ret
+
+  .rtc:                           ; MBC3 RAM banks 08-0C: latched clock
+    cmp   byte [rtc_present] , 0
+    je    .unusable
+    mov   eax , [mbc_bank_hi]
+    sub   eax , 8
+    cmp   eax , 4
+    ja    .unusable
+    movzx eax , byte [rtc_latched+rax]
     ret
 
   .wram:
@@ -111,6 +126,14 @@ mem_write:
   .cart_ram:
     cmp   byte [ram_enable] , 0
     je    .done
+    cmp   byte [mbc_type] , MBC_3
+    jne   @f
+    test  byte [mbc_bank_hi] , 0x08
+    jz    @f
+    cmp   byte [rtc_present] , 0
+    jne   rtc_write
+    ret
+  @@:
     cmp   dword [ram_size] , 0
     je    .done
     and   edx , 0x1FFF
@@ -192,10 +215,26 @@ mbc_write:
     jmp   .update
 
   .mode:
+    cmp   ecx , MBC_3
+    je    .rtc_latch
     cmp   ecx , MBC_1
     jne   .done
     and   eax , 1
     mov   [mbc1_mode] , al
+    jmp   .update
+
+  .rtc_latch:                     ; Writing 00 then 01 copies the clock
+    cmp   byte [rtc_latch_prev] , 0
+    jne   @f
+    cmp   eax , 1
+    jne   @f
+    mov   edx , dword [rtc_regs]
+    mov   dword [rtc_latched] , edx
+    mov   dl , [rtc_regs+4]
+    mov   [rtc_latched+4] , dl
+  @@:
+    mov   [rtc_latch_prev] , al
+    jmp   .done
 
   .update:
     call  mbc_update
@@ -265,7 +304,7 @@ mbc_update:
     shl   rax , 14
     mov   [rom_offn] , rax
     mov   eax , edx
-    and   eax , 3                 ; RTC registers (8-C) are not emulated
+    and   eax , 3                 ; Banks 08-0C are the RTC, see mem_read
     jmp   .ram_bank
 
   .mbc5:

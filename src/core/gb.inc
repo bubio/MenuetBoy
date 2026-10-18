@@ -70,6 +70,13 @@ gb_reset:
     mov   cl , MBC_NONE
   .mbc_set:
     mov   [mbc_type] , cl
+    cmp   eax , 0x0F
+    je    @f
+    cmp   eax , 0x10
+    jne   .rtc_set
+  @@:
+    mov   byte [rtc_present] , 1
+  .rtc_set:
 
     ; ROM size: 32KB shl n
     movzx ecx , byte [gb_rom+0x148]
@@ -145,6 +152,10 @@ gb_tick:
   @@:
     call  dma_tick
   .no_dma:
+    cmp   byte [rtc_present] , 0
+    je    @f
+    call  rtc_tick
+  @@:
     add   [apu_pending] , eax
     mov   ecx , eax
     shr   ecx , 2
@@ -219,6 +230,78 @@ dma_tick:
     jnz   .cycle
   .done:
     pop   rdx rcx rax
+    ret
+
+
+; MBC3 clock, counted in emulated time. Out-of-range values wrap at
+; their bit width without carrying, as on hardware.
+; In: eax = T-cycles   Preserves rax, rcx
+
+rtc_tick:
+
+    test  byte [rtc_regs+4] , 0x40
+    jnz   .done
+    add   [rtc_cycles] , eax
+    cmp   dword [rtc_cycles] , CYCLES_PER_SEC
+    jb    .done
+    sub   dword [rtc_cycles] , CYCLES_PER_SEC
+    push  rax
+    mov   al , [rtc_regs]
+    inc   al
+    and   al , 0x3F
+    cmp   al , 60
+    jne   .s
+    mov   byte [rtc_regs] , 0
+    mov   al , [rtc_regs+1]
+    inc   al
+    and   al , 0x3F
+    cmp   al , 60
+    jne   .m
+    mov   byte [rtc_regs+1] , 0
+    mov   al , [rtc_regs+2]
+    inc   al
+    and   al , 0x1F
+    cmp   al , 24
+    jne   .h
+    mov   byte [rtc_regs+2] , 0
+    inc   byte [rtc_regs+3]
+    jnz   .pop
+    xor   byte [rtc_regs+4] , 1   ; Day bit 8; 511 -> 0 sets the carry
+    test  byte [rtc_regs+4] , 1
+    jnz   .pop
+    or    byte [rtc_regs+4] , 0x80
+    jmp   .pop
+  .s:
+    mov   [rtc_regs] , al
+    jmp   .pop
+  .m:
+    mov   [rtc_regs+1] , al
+    jmp   .pop
+  .h:
+    mov   [rtc_regs+2] , al
+  .pop:
+    pop   rax
+  .done:
+    ret
+
+
+; Write the RTC register selected by RAM bank 08-0C. Writing the
+; seconds restarts the current second.
+; In: al = value   Clobbers rax, rdx
+
+rtc_write:
+
+    mov   edx , [mbc_bank_hi]
+    sub   edx , 8
+    cmp   edx , 4
+    ja    .done
+    and   al , [rtc_reg_mask+rdx]
+    mov   [rtc_regs+rdx] , al
+    mov   [rtc_latched+rdx] , al
+    test  edx , edx
+    jnz   .done
+    mov   dword [rtc_cycles] , 0
+  .done:
     ret
 
 
@@ -409,6 +492,7 @@ ppu_update_stat:
 
 tima_shift:     db  10 , 4 , 6 , 8   ; TIMA period 1024/16/64/256 T-cycles
 ram_size_table: dd  0 , 0x800 , 0x2000 , 0x8000 , 0x20000 , 0x10000
+rtc_reg_mask:   db  0x3F , 0x3F , 0x1F , 0xFF , 0xC1
 stat_mode_bit:  db  0x08 , 0x10 , 0x20 , 0x00
 ppu_mode_end:   dd  CYCLES_PER_LINE , CYCLES_PER_LINE , 80 , 252   ; Dot where mode 0-3 ends
 
