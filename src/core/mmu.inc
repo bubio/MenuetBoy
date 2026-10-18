@@ -423,10 +423,12 @@ io_write:
     mov   byte [dma_delay] , 2
     ret
 
-  .serial:
-    mov   [gb_io+IO_SC] , al
-    test  al , 0x80
-    jz    .done
+  .serial:                        ; No link partner: only a transfer on the
+    mov   [gb_io+IO_SC] , al      ; internal clock completes
+    not   al
+    test  al , 0x81
+    jnz   .done
+    not   al
     movzx eax , byte [gb_io+IO_SB]
     push  rcx rsi rdi r8 r9 r10 r11
     call  platform_serial

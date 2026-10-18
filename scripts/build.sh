@@ -1,8 +1,9 @@
 #!/bin/sh
 # Build MenuetBoy and regenerate the VM's CD image.
 #
-# Usage: scripts/build.sh [rom]
-#   rom: ROM loaded by default as /MENUETBOY/ROM.GB (default: roms/dmg-acid2.gb)
+# Usage: scripts/build.sh [rom] [rom_dir]
+#   rom:     ROM loaded by default as /MENUETBOY/ROM.GB (default: roms/dmg-acid2.gb)
+#   rom_dir: also put its *.gb in /MENUETBOY/ with 8.3 names (GAME.GB)
 #
 # Requires: brew install blink xorriso
 set -eu
@@ -14,6 +15,7 @@ VM=$ROOT/DevContainer/MenuetOS.utm
 BASE_ISO=$VM/M64CD16100.ISO
 OUT_ISO=$VM/MenuetBoy.ISO
 ROM=${1:-$ROOT/roms/dmg-acid2.gb}
+ROM_DIR=${2:-}
 
 FASM_VERSION=1.73.35
 FASM=$TOOLS/fasm/fasm.x64
@@ -58,6 +60,14 @@ set -- -map "$BUILD/MENUETBOY" /MENUETBOY/MENUETBOY -map "$ROM" /MENUETBOY/ROM.G
 for f in "$ROOT"/roms/*; do
     [ -f "$f" ] && set -- "$@" -map "$f" "/MENUETBOY/$(basename "$f" | tr '[:lower:]' '[:upper:]')"
 done
+if [ -n "$ROM_DIR" ]; then
+    for f in "$ROM_DIR"/*.gb; do
+        # "Some Game (Japan).gb" -> SOMEGAME.GB
+        name=$(basename "$f" .gb | sed 's/ (.*//' | tr -cd 'A-Za-z0-9' | tr '[:lower:]' '[:upper:]' | cut -c1-8)
+        set -- "$@" -map "$f" "/MENUETBOY/$name.GB"
+        echo "rom: /MENUETBOY/$name.GB <- $(basename "$f")"
+    done
+fi
 
 # Write to a new file and rename, so a running VM keeps reading the old image
 rm -f "$OUT_ISO.new"
