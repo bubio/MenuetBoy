@@ -1,0 +1,8 @@
+# Generated
+blink.log
+build/
+.tools/
+
+# UTM VM: keep only the settings (see docs/dev/environment.md)
+DevContainer/MenuetOS.utm/*
+!DevContainer/MenuetOS.utm/config.plist
