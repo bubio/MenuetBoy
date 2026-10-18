@@ -29,11 +29,11 @@ VM の画面はホストから撮れないため、VM 上の動作確認はユ�
 
 ```sh
 scripts/build.sh [rom]           # MenuetOS アプリをビルドし、VM の CD イメージを作り直す（要 brew install blink xorriso）
-scripts/test.sh                  # コアを Mac 上でテスト（Blargg cpu_instrs・dmg_sound、dmg-acid2 画面比較、440Hz トーン）
+scripts/test.sh                  # コアを Mac 上でテスト（Blargg・Mooneye のテスト ROM、dmg-acid2/halt_bug 画面比較、440Hz トーン）
 scripts/test.sh tests/roms/02-interrupts.gb   # 1 本だけ実行
 ```
 
-`scripts/test.sh` は `tests/harness.asm`（Linux x86-64 ELF）を blink で実行する。ROM のシリアル出力（dmg_sound はカートリッジ RAM の結果）を表示し、`Passed` / `Failed` で判定する。
+`scripts/test.sh` は `tests/harness.asm`（Linux x86-64 ELF）を blink で実行する。ROM のシリアル出力（dmg_sound はカートリッジ RAM の結果）を表示し、`Passed` / `Failed`（Mooneye は Fibonacci のバイト列 / 0x42）で判定する。画面にしか結果を出さない ROM は `tests/screen/` に置き、`tests/ref/` の PNG と比較する。
 `build/harness <rom> <frames> <out.pgm> [out.raw]` で LCD を PGM に、音声を s16le ステレオ 48kHz で書き出せる（blink 経由で実行、パスは `/SystemRoot` 付きの絶対パス）。
 MenuetOS 上での動作確認は VM を再起動して CD の `/MENUETBOY/MENUETBOY` を起動し、ユーザーに画面を見てもらう。
 
@@ -42,9 +42,9 @@ MenuetOS 上での動作確認は VM を再起動して CD の `/MENUETBOY/MENUE
 エミュレーターのコア（`src/core/`）はシステムコールを使わず、MenuetOS 版とテストハーネスの両方から include する。
 
 - `src/core/gb.inc` — 入口（`gb_reset` / `gb_run_frame` / `gb_set_button`）、タイマー、PPU のタイミングと STAT 割り込み
-- `src/core/cpu.inc` — SM83 インタプリタ。オペコード表 `op_table` から汎用ハンドラーへ分岐し、レジスタ番号はオペコードのビットから取り出す
+- `src/core/cpu.inc` — SM83 インタプリタ。オペコード表 `op_table` から汎用ハンドラーへ分岐し、レジスタ番号はオペコードのビットから取り出す。メモリアクセスのたびに `cpu_read` / `cpu_write` / `cpu_idle` が 4 T サイクル分 `gb_tick` を進める（M サイクル単位のタイミング）
 - `src/core/ppu.inc` — HBlank に入るたびに 1 ライン描画（BG・ウィンドウ・オブジェクト）して `gb_lcd`（濃淡 0-3）に書く
-- `src/core/mmu.inc` — メモリマップ、MBC1/3/5、I/O レジスタ
+- `src/core/mmu.inc` — メモリマップ、MBC1/2/3/5、I/O レジスタ、OAM DMA の開始（転送は `gb_tick` で 1 M サイクル 1 バイト）
 - `src/core/apu.inc` — サウンド。`gb_tick` はサイクルを溜めるだけで、レジスタアクセス時などに `apu_sync` で追いつき、48kHz ステレオを `apu_ring` に書く
 - `src/core/state.inc` — 全状態を `virtual at GB_STATE` で定義。フロントエンドが `GB_STATE`・`gb_rom`・`platform_serial` を用意する
 - `src/menuetboy.asm` — MenuetOS フロントエンド。先頭にアプリ内メモリマップ。補正した時計で 59.7fps に合わせて `gb_run_frame` を呼び、`gb_lcd` を 2 倍に拡大して syscall 7 で表示し、`apu_ring` を syscall 117 のダブルバッファに流す

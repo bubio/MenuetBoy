@@ -258,7 +258,7 @@ parse_dec:                        ; In: rsi = string   Out: rax
     ret
 
 
-; Echo serial output and watch for Blargg's result strings.
+; Echo serial output and watch for Blargg's result strings and Mooneye's result bytes.
 
 platform_serial:
 
@@ -282,6 +282,16 @@ platform_serial:
     mov   rcx , 'Failed'
     bswap rcx
     shr   rcx , 16
+    cmp   rax , rcx
+    jne   @f
+    mov   byte [test_result] , 2
+  @@:
+    mov   rcx , 0x0305080D1522    ; Mooneye: Fibonacci bytes pass, 0x42 fail
+    cmp   rax , rcx
+    jne   @f
+    mov   byte [test_result] , 1
+  @@:
+    mov   rcx , 0x424242424242
     cmp   rax , rcx
     jne   @f
     mov   byte [test_result] , 2

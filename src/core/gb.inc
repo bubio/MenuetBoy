@@ -51,6 +51,11 @@ gb_reset:
     mov   cl , MBC_1
     cmp   eax , 0x03
     jbe   .mbc_set
+    cmp   eax , 0x05
+    jb    .mbc_none
+    mov   cl , MBC_2
+    cmp   eax , 0x06
+    jbe   .mbc_set
     mov   cl , MBC_3
     cmp   eax , 0x0F
     jb    .mbc_none
@@ -84,6 +89,10 @@ gb_reset:
     ja    @f
     mov   eax , [ram_size_table+rcx*4]
   @@:
+    cmp   byte [mbc_type] , MBC_2
+    jne   @f
+    mov   eax , 0x200             ; MBC2: built-in 512 x 4 bits
+  @@:
     mov   [ram_size] , eax
 
     mov   dword [mbc_bank_lo] , 1
@@ -99,7 +108,6 @@ gb_run_frame:
   .step:
     call  cpu_step
     add   r12d , eax
-    call  gb_tick
     cmp   r12d , CYCLES_PER_FRAME
     jb    .step
     call  apu_sync
@@ -130,36 +138,29 @@ gb_set_button:
 
 gb_tick:
 
+    cmp   byte [dma_active] , 0
+    jne   @f
+    cmp   byte [dma_delay] , 0
+    je    .no_dma
+  @@:
+    call  dma_tick
+  .no_dma:
     add   [apu_pending] , eax
-    mov   edx , [div_counter]
-    add   [div_counter] , eax
-
-    ; TIMA counts falling edges of the DIV counter bit selected by TAC
-    movzx ecx , byte [gb_io+IO_TAC]
-    test  ecx , 4
+    mov   ecx , eax
+    shr   ecx , 2
     jz    .ppu
-    and   ecx , 3
-    mov   cl , [tima_shift+rcx]
-    push  rsi
-    mov   esi , [div_counter]
-    shr   esi , cl
-    shr   edx , cl
-    sub   esi , edx
-    mov   edx , -1                ; Mask out the wrap of div_counter
-    shr   edx , cl
-    and   esi , edx
-    jz    .tima_done
-  .tima:
-    call  tima_inc
-    dec   esi
-    jnz   .tima
-  .tima_done:
-    pop   rsi
+  .timer:
+    call  timer_mcycle
+    dec   ecx
+    jnz   .timer
 
   .ppu:
     test  byte [gb_io+IO_LCDC] , 0x80
     jz    .done
     add   [ppu_dot] , eax
+    mov   edx , [ppu_dot]
+    cmp   edx , [ppu_next_dot]    ; STAT only changes at mode boundaries
+    jb    .done
   .line:
     cmp   dword [ppu_dot] , CYCLES_PER_LINE
     jb    .stat
@@ -181,13 +182,144 @@ gb_tick:
     ret
 
 
-tima_inc:
+; OAM DMA: start after the delay, then copy one byte per M-cycle.
+; In: eax = T-cycles   Preserves rax
 
-    inc   byte [gb_io+IO_TIMA]
-    jnz   @f
+dma_tick:
+
+    push  rax rcx rdx
+    mov   ecx , eax
+    shr   ecx , 2
+    jz    .done
+  .cycle:
+    cmp   byte [dma_delay] , 0
+    je    .copy
+    dec   byte [dma_delay]
+    jnz   .copy
+    mov   eax , [dma_next_src]    ; A restarted DMA takes over here
+    mov   [dma_src] , eax
+    mov   dword [dma_pos] , 0
+    mov   byte [dma_active] , 1
+    jmp   .next
+  .copy:
+    cmp   byte [dma_active] , 0
+    je    .next
+    mov   edx , [dma_src]
+    add   edx , [dma_pos]
+    call  mem_read
+    mov   edx , [dma_pos]
+    mov   [gb_oam+rdx] , al
+    inc   edx
+    mov   [dma_pos] , edx
+    cmp   edx , 0xA0
+    jb    .next
+    mov   byte [dma_active] , 0
+  .next:
+    dec   ecx
+    jnz   .cycle
+  .done:
+    pop   rdx rcx rax
+    ret
+
+
+; Advance DIV by one M-cycle. TIMA counts falling edges of the DIV
+; counter bit selected by TAC. TIMA reads 00 in the M-cycle it
+; overflows and is reloaded from TMA in the next one (see tima_state).
+; Clobbers rdx. Preserves rax, rcx.
+
+timer_mcycle:
+
+    mov   dl , [tima_state]
+    test  dl , dl
+    jz    .count
+    mov   byte [tima_state] , 0
+    cmp   dl , 1
+    jne   .count
     mov   dl , [gb_io+IO_TMA]
     mov   [gb_io+IO_TIMA] , dl
     or    byte [gb_io+IO_IF] , 0x04
+    mov   byte [tima_state] , 2
+
+  .count:
+    mov   edx , [div_counter]
+    add   dword [div_counter] , 4
+    test  byte [gb_io+IO_TAC] , 4
+    jz    .done
+    push  rax rcx
+    movzx ecx , byte [gb_io+IO_TAC]
+    and   ecx , 3
+    mov   cl , [tima_shift+rcx]
+    mov   eax , [div_counter]
+    shr   eax , cl
+    shr   edx , cl
+    cmp   eax , edx
+    je    @f
+    call  tima_inc
+  @@:
+    pop   rcx rax
+  .done:
+    ret
+
+
+tima_inc:                         ; Clobbers rdx
+
+    inc   byte [gb_io+IO_TIMA]
+    jnz   @f
+    mov   byte [tima_state] , 1
+  @@:
+    ret
+
+
+; TIMA / TMA / TAC writes. In: al = value. Clobbers rax, rdx.
+
+tima_write:
+
+    cmp   byte [tima_state] , 2   ; Ignored in the reload cycle
+    je    @f
+    mov   byte [tima_state] , 0   ; Cancels a pending reload
+    mov   [gb_io+IO_TIMA] , al
+  @@:
+    ret
+
+tma_write:
+
+    mov   [gb_io+IO_TMA] , al
+    cmp   byte [tima_state] , 2
+    jne   @f
+    mov   [gb_io+IO_TIMA] , al
+  @@:
+    ret
+
+tac_write:                        ; Disabling or switching away from a set
+                                  ; DIV bit is a falling edge
+    push  rcx
+    or    al , 0xF8
+    mov   ah , [gb_io+IO_TAC]
+    mov   [gb_io+IO_TAC] , al
+    mov   al , ah
+    call  tac_input
+    mov   ah , dl
+    mov   al , [gb_io+IO_TAC]
+    call  tac_input
+    cmp   ah , dl
+    jbe   @f
+    call  tima_inc
+  @@:
+    pop   rcx
+    ret
+
+tac_input:                        ; In: al = TAC   Out: dl = timer input bit
+
+    xor   edx , edx
+    test  al , 4
+    jz    @f
+    movzx ecx , al
+    and   ecx , 3
+    mov   cl , [tima_shift+rcx]
+    dec   cl
+    mov   edx , [div_counter]
+    shr   edx , cl
+    and   edx , 1
   @@:
     ret
 
@@ -235,6 +367,8 @@ ppu_update_stat:
     jb    .mode
     xor   eax , eax
   .mode:
+    mov   edx , [ppu_mode_end+rax*4]
+    mov   [ppu_next_dot] , edx
     cmp   byte [ppu_mode] , 3
     jne   @f
     test  eax , eax
@@ -276,6 +410,7 @@ ppu_update_stat:
 tima_shift:     db  10 , 4 , 6 , 8   ; TIMA period 1024/16/64/256 T-cycles
 ram_size_table: dd  0 , 0x800 , 0x2000 , 0x8000 , 0x20000 , 0x10000
 stat_mode_bit:  db  0x08 , 0x10 , 0x20 , 0x00
+ppu_mode_end:   dd  CYCLES_PER_LINE , CYCLES_PER_LINE , 80 , 252   ; Dot where mode 0-3 ends
 
 include 'ppu.inc'
 include 'mmu.inc'

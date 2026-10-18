@@ -28,6 +28,7 @@ IO_NR52     = 0x26
 
 MBC_NONE    = 0
 MBC_1       = 1
+MBC_2       = 2
 MBC_3       = 3
 MBC_5       = 5
 
@@ -55,10 +56,15 @@ virtual at GB_STATE
   cpu_ei_pending  db ?            ; EI executed, IME set after next instruction
   cpu_ei_now      db ?
   cpu_halted      db ?
+  cpu_halt_bug    db ?            ; Next opcode fetch does not advance PC
   op_cycles       dd ?            ; T-cycles of the current instruction
+  cpu_ticked      dd ?            ; Of those, already passed to gb_tick
 
   div_counter     dd ?            ; DIV is bits 8-15
+  tima_state      db ?            ; 0 counting, 1 overflowed (TIMA=00),
+                                  ; 2 reloaded in this M-cycle
   ppu_dot         dd ?            ; Dot within the current line
+  ppu_next_dot    dd ?            ; Next dot where STAT may change, 0 = now
   ppu_mode        db ?
   stat_line       db ?            ; STAT interrupt line, for edge detection
   win_line        db ?            ; Window internal line counter
@@ -80,6 +86,12 @@ virtual at GB_STATE
   joy_buttons     db ?            ; 1=pressed: 0 right 1 left 2 up 3 down
                                   ;            4 A 5 B 6 select 7 start
   gb_ie           db ?
+
+  dma_active      db ?            ; OAM DMA copying (OAM blocked for the CPU)
+  dma_delay       db ?            ; M-cycles until a written DMA starts
+  dma_pos         dd ?            ; Next byte 0-159
+  dma_src         dd ?
+  dma_next_src    dd ?
 
   apu_pending     dd ?            ; T-cycles not yet run by apu_sync
   apu_next        dd ?            ; T-cycles to the next sample, 16.16

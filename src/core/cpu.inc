@@ -3,6 +3,10 @@
 ; Opcode handlers are called with ebx = opcode. They may clobber
 ; rax, rcx, rdx, rsi, rdi and add extra cycles to [op_cycles].
 ;
+; Timer and PPU advance by 4 T-cycles before each memory access
+; (cpu_read / cpu_write / cpu_idle); cycles left over when an
+; instruction ends are ticked then.
+;
 ; 8-bit register index (opcode bits): 0 B, 1 C, 2 D, 3 E, 4 H, 5 L, 6 (HL), 7 A
 ; 16-bit register index (opcode bits 4-5): 0 BC, 1 DE, 2 HL, 3 SP (AF for push/pop)
 
@@ -12,6 +16,7 @@
 
 cpu_step:
 
+    mov   dword [cpu_ticked] , 0
     movzx eax , byte [gb_ie]
     and   al , [gb_io+IO_IF]
     and   eax , 0x1F
@@ -20,41 +25,84 @@ cpu_step:
     cmp   byte [cpu_ime] , 0
     je    .no_irq
 
-    bsf   ecx , eax               ; Highest priority = lowest bit
-    btr   dword [gb_io+IO_IF] , ecx
     mov   byte [cpu_ime] , 0
     mov   byte [cpu_ei_pending] , 0
-    push  rcx
-    movzx eax , word [cpu_pc]
-    call  push16
-    pop   rcx
+    mov   dword [op_cycles] , 20
+    call  cpu_idle                ; 2 internal cycles
+    call  cpu_idle
+    dec   word [cpu_sp]
+    movzx edx , word [cpu_sp]
+    mov   al , byte [cpu_pc+1]
+    call  cpu_write
+    movzx eax , byte [gb_ie]      ; The PC high byte push may have hit IE
+    and   al , [gb_io+IO_IF]
+    and   eax , 0x1F
+    jz    @f                      ; Cancelled: jump to 0000
+    bsf   ecx , eax               ; Highest priority = lowest bit
+    btr   dword [gb_io+IO_IF] , ecx
     lea   eax , [0x40+rcx*8]
-    mov   [cpu_pc] , ax
-    mov   eax , 20
-    ret
+  @@:
+    mov   ecx , eax
+    dec   word [cpu_sp]
+    movzx edx , word [cpu_sp]
+    mov   al , byte [cpu_pc]
+    call  cpu_write
+    mov   [cpu_pc] , cx
+    jmp   .finish
 
   .no_irq:
+    mov   dword [op_cycles] , 4
     cmp   byte [cpu_halted] , 0
-    je    .execute
-    mov   eax , 4
-    ret
+    jne   .finish
 
-  .execute:
     mov   al , [cpu_ei_pending]
     mov   [cpu_ei_now] , al
     mov   byte [cpu_ei_pending] , 0
 
     call  fetch8
+    cmp   byte [cpu_halt_bug] , 0
+    je    @f
+    mov   byte [cpu_halt_bug] , 0
+    dec   word [cpu_pc]           ; HALT bug: this byte is read again
+  @@:
     mov   ebx , eax
     movzx ecx , byte [cycle_table+rbx]
     mov   [op_cycles] , ecx
     call  qword [op_table+rbx*8]
 
     cmp   byte [cpu_ei_now] , 0
-    je    @f
+    je    .finish
     mov   byte [cpu_ime] , 1
+
+  .finish:
+    mov   eax , [op_cycles]
+    sub   eax , [cpu_ticked]
+    jbe   @f
+    call  gb_tick
   @@:
     mov   eax , [op_cycles]
+    ret
+
+
+; Bus access with timing. Same interface as mem_read / mem_write.
+
+cpu_read:
+
+    call  cpu_idle
+    jmp   mem_read
+
+cpu_write:
+
+    call  cpu_idle
+    jmp   mem_write
+
+cpu_idle:                         ; Advance 4 T-cycles. Preserves all but flags
+
+    push  rax rcx rdx rsi rdi r8 r9 r10 r11
+    add   dword [cpu_ticked] , 4
+    mov   eax , 4
+    call  gb_tick
+    pop   r11 r10 r9 r8 rdi rsi rdx rcx rax
     ret
 
 
@@ -63,7 +111,7 @@ cpu_step:
 fetch8:                           ; Out: eax = byte at PC, PC+1
 
     movzx edx , word [cpu_pc]
-    call  mem_read
+    call  cpu_read
     inc   word [cpu_pc]
     ret
 
@@ -77,27 +125,28 @@ fetch16:                          ; Out: eax = word at PC, PC+2
     or    eax , edx
     ret
 
-push16:                           ; In: ax = value
+push16:                           ; In: ax = value. Includes the internal cycle
 
+    call  cpu_idle
     sub   word [cpu_sp] , 2
     push  rax
     movzx edx , word [cpu_sp]
     inc   edx
     and   edx , 0xFFFF
     mov   al , ah
-    call  mem_write
+    call  cpu_write
     pop   rax
     movzx edx , word [cpu_sp]
-    jmp   mem_write
+    jmp   cpu_write
 
 pop16:                            ; Out: eax = value
 
     movzx edx , word [cpu_sp]
-    call  mem_read
+    call  cpu_read
     push  rax
     inc   edx
     and   edx , 0xFFFF
-    call  mem_read
+    call  cpu_read
     shl   eax , 8
     pop   rdx
     or    eax , edx
@@ -113,7 +162,7 @@ read_r8:                          ; In: ecx = index   Out: eax   Preserves rcx
     ret
   .hl:
     movzx edx , word [cpu_l]
-    jmp   mem_read
+    jmp   cpu_read
 
 write_r8:                         ; In: ecx = index, al = value
 
@@ -124,7 +173,7 @@ write_r8:                         ; In: ecx = index, al = value
     ret
   .hl:
     movzx edx , word [cpu_l]
-    jmp   mem_write
+    jmp   cpu_write
 
 check_cond:                       ; In: ebx = opcode   Out: eax = 1 if taken
 
@@ -171,39 +220,39 @@ op_ld_mbc_a:
 
     movzx edx , word [cpu_c]
     mov   al , [cpu_a]
-    jmp   mem_write
+    jmp   cpu_write
 
 op_ld_mde_a:
 
     movzx edx , word [cpu_e]
     mov   al , [cpu_a]
-    jmp   mem_write
+    jmp   cpu_write
 
 op_ld_mhli_a:
 
     movzx edx , word [cpu_l]
     inc   word [cpu_l]
     mov   al , [cpu_a]
-    jmp   mem_write
+    jmp   cpu_write
 
 op_ld_mhld_a:
 
     movzx edx , word [cpu_l]
     dec   word [cpu_l]
     mov   al , [cpu_a]
-    jmp   mem_write
+    jmp   cpu_write
 
 op_ld_a_mbc:
 
     movzx edx , word [cpu_c]
-    call  mem_read
+    call  cpu_read
     mov   [cpu_a] , al
     ret
 
 op_ld_a_mde:
 
     movzx edx , word [cpu_e]
-    call  mem_read
+    call  cpu_read
     mov   [cpu_a] , al
     ret
 
@@ -211,7 +260,7 @@ op_ld_a_mhli:
 
     movzx edx , word [cpu_l]
     inc   word [cpu_l]
-    call  mem_read
+    call  cpu_read
     mov   [cpu_a] , al
     ret
 
@@ -219,7 +268,7 @@ op_ld_a_mhld:
 
     movzx edx , word [cpu_l]
     dec   word [cpu_l]
-    call  mem_read
+    call  cpu_read
     mov   [cpu_a] , al
     ret
 
@@ -228,13 +277,13 @@ op_ldh_mn_a:
     call  fetch8
     lea   edx , [eax+0xFF00]
     mov   al , [cpu_a]
-    jmp   mem_write
+    jmp   cpu_write
 
 op_ldh_a_mn:
 
     call  fetch8
     lea   edx , [eax+0xFF00]
-    call  mem_read
+    call  cpu_read
     mov   [cpu_a] , al
     ret
 
@@ -243,13 +292,13 @@ op_ld_mc_a:
     movzx edx , byte [cpu_c]
     add   edx , 0xFF00
     mov   al , [cpu_a]
-    jmp   mem_write
+    jmp   cpu_write
 
 op_ld_a_mc:
 
     movzx edx , byte [cpu_c]
     add   edx , 0xFF00
-    call  mem_read
+    call  cpu_read
     mov   [cpu_a] , al
     ret
 
@@ -258,13 +307,13 @@ op_ld_mnn_a:
     call  fetch16
     mov   edx , eax
     mov   al , [cpu_a]
-    jmp   mem_write
+    jmp   cpu_write
 
 op_ld_a_mnn:
 
     call  fetch16
     mov   edx , eax
-    call  mem_read
+    call  cpu_read
     mov   [cpu_a] , al
     ret
 
@@ -286,12 +335,12 @@ op_ld_mnn_sp:
     mov   edx , eax
     push  rdx
     mov   al , byte [cpu_sp]
-    call  mem_write
+    call  cpu_write
     pop   rdx
     inc   edx
     and   edx , 0xFFFF
     mov   al , byte [cpu_sp+1]
-    jmp   mem_write
+    jmp   cpu_write
 
 op_ld_sp_hl:
 
@@ -726,6 +775,7 @@ op_reti:
 
 op_ret_cc:
 
+    call  cpu_idle                ; Condition check
     call  check_cond
     test  eax , eax
     jz    @f
@@ -756,8 +806,18 @@ op_stop:
     call  fetch8                  ; STOP is followed by one ignored byte
     ret
 
-op_halt:
-
+op_halt:                          ; With IME=0 and an interrupt pending, HALT
+                                  ; does not halt and PC fails to advance once
+    mov   al , [cpu_ime]
+    or    al , [cpu_ei_now]
+    jnz   .halt
+    movzx eax , byte [gb_ie]
+    and   al , [gb_io+IO_IF]
+    and   eax , 0x1F
+    jz    .halt
+    mov   byte [cpu_halt_bug] , 1
+    ret
+  .halt:
     mov   byte [cpu_halted] , 1
     ret
 

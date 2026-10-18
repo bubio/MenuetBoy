@@ -47,10 +47,18 @@ mem_read:
     je    .unusable
     cmp   dword [ram_size] , 0
     je    .unusable
+    cmp   byte [mbc_type] , MBC_2
+    je    .mbc2_ram
     mov   eax , edx
     and   eax , 0x1FFF
     add   rax , [ram_off]
     movzx eax , byte [gb_cart_ram+rax]
+    ret
+  .mbc2_ram:                      ; 4-bit cells, repeated over A000-BFFF
+    mov   eax , edx
+    and   eax , 0x1FF
+    movzx eax , byte [gb_cart_ram+rax]
+    or    eax , 0xF0
     ret
 
   .wram:
@@ -60,6 +68,8 @@ mem_read:
     ret
 
   .oam:
+    cmp   byte [dma_active] , 0
+    jne   .unusable
     movzx eax , byte [gb_oam-0xFE00+rdx]
     ret
 
@@ -104,6 +114,10 @@ mem_write:
     cmp   dword [ram_size] , 0
     je    .done
     and   edx , 0x1FFF
+    cmp   byte [mbc_type] , MBC_2
+    jne   @f
+    and   edx , 0x1FF
+  @@:
     add   rdx , [ram_off]
     mov   [gb_cart_ram+rdx] , al
     ret
@@ -114,6 +128,8 @@ mem_write:
     ret
 
   .oam:
+    cmp   byte [dma_active] , 0
+    jne   .done
     mov   [gb_oam-0xFE00+rdx] , al
     ret
 
@@ -132,8 +148,18 @@ mbc_write:
     je    .done
     movzx eax , al
 
+    cmp   ecx , MBC_2
+    jne   @f
+    cmp   edx , 0x4000
+    jae   .done
+    test  edx , 0x100             ; Address bit 8 selects ROM bank / RAM enable
+    jz    .ram_enable
+    mov   [mbc_bank_lo] , eax
+    jmp   .update
+  @@:
     cmp   edx , 0x2000
     jae   .not_ram_enable
+  .ram_enable:
     and   eax , 0x0F
     cmp   eax , 0x0A
     sete  [ram_enable]
@@ -216,6 +242,19 @@ mbc_update:
     jmp   .ram_bank
 
   .not_mbc1:
+    cmp   ecx , MBC_2
+    jne   .not_mbc2
+    and   eax , 0x0F
+    jnz   @f
+    inc   eax
+  @@:
+    and   eax , [rom_bank_mask]
+    shl   rax , 14
+    mov   [rom_offn] , rax
+    xor   eax , eax
+    jmp   .ram_bank
+
+  .not_mbc2:
     cmp   ecx , MBC_3
     jne   .mbc5
     and   eax , 0x7F
@@ -268,7 +307,11 @@ io_read:
     cmp   eax , 0x40
     jb    apu_read
   @@:
-    movzx eax , byte [gb_io+rax]
+    push  rdx
+    movzx edx , byte [io_unused_bits+rax]
+    or    dl , [gb_io+rax]
+    mov   eax , edx
+    pop   rdx
     ret
 
   .div:
@@ -310,6 +353,12 @@ io_write:
     and   edx , 0x7F
     cmp   edx , IO_DIV
     je    .div
+    cmp   edx , IO_TIMA
+    je    tima_write
+    cmp   edx , IO_TMA
+    je    tma_write
+    cmp   edx , IO_TAC
+    je    tac_write
     cmp   edx , IO_SC
     je    .serial
     cmp   edx , IO_LY
@@ -320,6 +369,8 @@ io_write:
     je    .dma
     cmp   edx , IO_LCDC
     je    .lcdc
+    cmp   edx , IO_LYC
+    je    .lyc
     cmp   edx , 0x10
     jb    @f
     cmp   edx , 0x40
@@ -332,7 +383,13 @@ io_write:
   .div:
     jmp   div_reset
 
+  .lyc:
+    mov   [gb_io+IO_LYC] , al
+    mov   dword [ppu_next_dot] , 0
+    ret
+
   .stat:
+    mov   dword [ppu_next_dot] , 0
     and   al , 0x78
     mov   ah , [gb_io+IO_STAT]
     and   ah , 0x07
@@ -341,6 +398,7 @@ io_write:
     ret
 
   .lcdc:
+    mov   dword [ppu_next_dot] , 0
     mov   ah , [gb_io+IO_LCDC]
     mov   [gb_io+IO_LCDC] , al
     test  al , 0x80
@@ -353,20 +411,16 @@ io_write:
     and   byte [gb_io+IO_STAT] , 0xFC
     ret
 
-  .dma:
+  .dma:                           ; Copied one byte per M-cycle by dma_tick
     mov   [gb_io+IO_DMA] , al
-    push  rcx
     movzx edx , al
     shl   edx , 8
-    xor   ecx , ecx
+    cmp   edx , 0xE000            ; E000-FFFF read from WRAM
+    jb    @f
+    sub   edx , 0x2000
   @@:
-    call  mem_read
-    mov   [gb_oam+rcx] , al
-    inc   edx
-    inc   ecx
-    cmp   ecx , 0xA0
-    jb    @b
-    pop   rcx
+    mov   [dma_next_src] , edx
+    mov   byte [dma_delay] , 2
     ret
 
   .serial:
@@ -381,3 +435,15 @@ io_write:
     mov   byte [gb_io+IO_SB] , 0xFF
     or    byte [gb_io+IO_IF] , 0x08
     ret
+
+
+; Bits that read as 1 (unused bits and registers). Joypad, DIV, IF and
+; sound registers are handled separately.
+io_unused_bits:
+    db  0x00 , 0x00 , 0x7E , 0xFF , 0x00 , 0x00 , 0x00 , 0xF8   ; FF00
+    db  0xFF , 0xFF , 0xFF , 0xFF , 0xFF , 0xFF , 0xFF , 0x00   ; FF08
+    times 0x30 db 0                                              ; FF10 sound
+    db  0x00 , 0x80 , 0x00 , 0x00 , 0x00 , 0x00 , 0x00 , 0x00   ; FF40
+    db  0x00 , 0x00 , 0x00 , 0x00                                ; FF48
+    times 0x34 db 0xFF                                           ; FF4C-FF7F
+assert $ - io_unused_bits = 0x80

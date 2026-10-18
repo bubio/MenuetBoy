@@ -27,14 +27,18 @@ fail=0
 
 # Screen tests: <rom> <frames> <reference png>, run only without arguments
 if [ $# -eq 0 ]; then
-    printf '== dmg-acid2 (screen)\n'
-    blink -m "/SystemRoot$BUILD/harness" "/SystemRoot$ROOT/roms/dmg-acid2.gb" 120 \
-        "/SystemRoot$BUILD/dmg-acid2.pgm" >/dev/null || true
-    if python3 "$ROOT/tests/compare_screen.py" "$ROOT/tests/ref/dmg-acid2.png" "$BUILD/dmg-acid2.pgm"; then
-        pass=$((pass + 1))
-    else
-        fail=$((fail + 1))
-    fi
+    for test in "$ROOT/roms/dmg-acid2.gb 120 dmg-acid2" "$ROOT/tests/screen/halt_bug.gb 300 halt_bug"; do
+        set -- $test
+        printf '== %s (screen)\n' "$3"
+        blink -m "/SystemRoot$BUILD/harness" "/SystemRoot$1" "$2" \
+            "/SystemRoot$BUILD/$3.pgm" >/dev/null || true
+        if python3 "$ROOT/tests/compare_screen.py" "$ROOT/tests/ref/$3.png" "$BUILD/$3.pgm"; then
+            pass=$((pass + 1))
+        else
+            fail=$((fail + 1))
+        fi
+    done
+    set --
 
     printf '== 440Hz tone (sound)\n'
     python3 "$ROOT/tests/sound_tone.py" make "$BUILD/tone.gb"
