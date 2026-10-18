@@ -4,6 +4,15 @@
 fasm にネイティブ arm64 版がなく、ISO 追記は公式 ISO の起動構成に手を加えずに済むため。
 VM 側では CD の `/MENUETBOY/MENUETBOY` を起動する。
 
+## MenuetOS の入手
+
+Menuet64 は再頒布禁止のライセンスのため（[m64l.txt](https://www.menuetos.net/m64l.txt)、個人・教育目的は無償）、ISO はリポジトリに含めず各自が公式サイトから入手する。
+ビルドで作る `MenuetBoy.ISO` も OS 本体を含むので配布しない。
+
+1. https://www.menuetos.net/download.htm の「M64 - 80 MB Bootable CD image」（`M64CD-1.61.00.ISO`、Google Drive）をダウンロードする
+2. `DevContainer/MenuetOS.utm/M64CD16100.ISO` として置く（ビルドのベース。手元の版の SHA-256 は `186af6eafca1904312194137f48ca67a38071574534457c8dff1e17de4a9fa60`）
+3. VM が参照する CD のリンクを作る: `mkdir -p DevContainer/MenuetOS.utm/Data && ln -s ../MenuetBoy.ISO DevContainer/MenuetOS.utm/Data/M64CD16100.ISO`
+
 ## ビルド
 
 ```sh
