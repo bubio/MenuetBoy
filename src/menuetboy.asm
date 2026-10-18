@@ -34,7 +34,7 @@ VIEW_X      = 10                  ; LCD position in window
 VIEW_Y      = 30
 LINE_H      = 16
 INFO_Y      = VIEW_Y+VIEW_H+8
-INFO_LINES  = 6
+INFO_LINES  = 7
 WIN_W       = VIEW_W+VIEW_X*2
 WIN_H       = INFO_Y+LINE_H*INFO_LINES+8
 
@@ -42,6 +42,7 @@ BG_COLOR    = 0xFFFFFF
 TEXT_COLOR  = 0x000000
 
 FRAME_US    = 16743               ; 70224 cycles / 4194304 Hz
+PACE_MAX    = 800                 ; Max frame interval adjustment (us)
 SYS_MS_TIMER = 48*8               ; ms counter in syscall 26 general data
 
 use64
@@ -58,6 +59,13 @@ use64
     dq    0x00                    ; Icon
 
 START:
+
+    call  read_timer_ms
+    mov   [clk_edge_ms] , rax
+    mov   rax , 3
+    mov   rbx , 1
+    int   0x60
+    mov   [clk_rtc] , rax
 
     call  load_rom
 
@@ -82,19 +90,20 @@ main_loop:
     sub   rbx , rax
     jg    .wait
 
+    sub   [late_us] , rbx         ; How late this frame starts
     call  frame
     mov   rax , 11                ; Check for event
     int   0x60
     jmp   .dispatch
 
   .wait:
-    mov   rax , rbx               ; Round up to ms
-    add   rax , 999
-    xor   rdx , rdx
+    imul  rbx , [clk_rate]        ; Wall clock us -> timer us
+    xor   edx , edx
+    mov   rax , rbx
     mov   rcx , 1000
     div   rcx
     mov   rbx , rax
-    mov   rax , 123               ; Wait for event with timeout (ms)
+    mov   rax , 223               ; Wait for event with timeout (us)
     int   0x60
 
   .dispatch:
@@ -267,10 +276,6 @@ load_rom:
     ret
 
   .error:
-    mov   rax , [rom_error]
-    mov   rdi , txt_error.code
-    mov   rcx , 2
-    call  write_hex
     mov   qword [txt_status] , txt_error
     ret
 
@@ -281,14 +286,37 @@ load_rom:
 try_load:
 
     mov   [rom_path] , r9
-    mov   rax , 58                ; Read file
+    mov   rax , 58                ; Read the first block for the file size
     mov   rbx , 0
     mov   rcx , 0
-    mov   rdx , ROM_MAX/512
+    mov   rdx , 1
     mov   r8  , ROM_BUF
     int   0x60
+    test  rax , rax
+    jnz   .done
+    cmp   rbx , ROM_MAX
+    jbe   @f
+    mov   rbx , ROM_MAX
+  @@:
+    lea   rdx , [rbx+511]         ; Then read just the blocks of the file
+    shr   rdx , 9
+    mov   rax , 58
+    mov   rbx , 0
+    mov   rcx , 0
+    mov   r8  , ROM_BUF
+    int   0x60
+  .done:
     mov   [rom_error] , rax
     mov   [rom_size] , rbx
+    mov   rdi , [error_log_pos]   ; Append the code to the error line
+    cmp   rdi , txt_error.end
+    jae   .logged
+    push  rax
+    mov   rcx , 2
+    call  write_hex
+    pop   rax
+    add   qword [error_log_pos] , 3
+  .logged:
     ret
 
 
@@ -300,25 +328,26 @@ audio_init:
     mov   rax , 117               ; Reserve audio out
     mov   rbx , 1
     int   0x60
+    mov   r13 , 1                 ; Failing step, shown on screen
     test  rax , rax
     jnz   .fail
     mov   rax , 117               ; Format 0 buffer size
     mov   rbx , 7
     mov   rcx , 0
     int   0x60
+    mov   r13 , 7
     test  rax , rax
     jnz   .free
+    mov   rax , rbx
     shr   rbx , 48
     jz    .free
     cmp   rbx , AUDIO_BUF_MAX
     ja    .free
     mov   [audio_bytes] , rbx
-    mov   rax , 117               ; Select format 0
-    mov   rbx , 8
-    mov   rcx , 0
+    mov   rax , 117               ; Select format 0. The result is not
+    mov   rbx , 8                 ; checked, like the sample AUDIO.ASM:
+    mov   rcx , 0                 ; it fails here while playback works
     int   0x60
-    test  rax , rax
-    jnz   .free
 
     mov   rdi , AUDIO_BUF         ; Start with two silent buffers
     mov   rcx , [audio_bytes]
@@ -338,6 +367,7 @@ audio_init:
     mov   rax , 117               ; Start play
     mov   rbx , 3
     int   0x60
+    mov   r13 , 3
     test  rax , rax
     jnz   .free
 
@@ -351,16 +381,31 @@ audio_init:
     mov   qword [txt_audio_status] , txt_audio
     ret
   .free:
+    push  rax
     mov   rax , 117               ; Free device
     mov   rbx , 255
     int   0x60
+    pop   rax
   .fail:
+    mov   rdi , txt_audio_none.code
+    mov   rcx , 16
+    call  write_hex
+    mov   rax , r13
+    mov   rdi , txt_audio_none.step
+    mov   rcx , 3
+    call  write_dec
     mov   qword [txt_audio_status] , txt_audio_none
     ret
 
 
 ; When the card has moved to the buffer we filled last, fill the other
-; one from apu_ring. Missing frames repeat the last frame.
+; one from apu_ring.
+;
+; A cushion of half a buffer is kept in the ring so that frame timing
+; jitter does not starve the card. Until the clock is calibrated, or
+; after an underrun until the cushion is rebuilt, silence is played.
+; The cushion size after each fill also nudges the frame interval
+; (pace_adjust_us), which locks emulation speed to the audio clock.
 
 audio_update:
 
@@ -374,15 +419,34 @@ audio_update:
 
     mov   rcx , [audio_bytes]
     shr   rcx , 2                 ; Frames per buffer
-    mov   esi , [audio_rpos]
+    mov   r8d , ecx
+    shr   r8d , 1                 ; Cushion
     mov   eax , [apu_wpos]
-    sub   eax , esi
-    lea   edx , [ecx*2+ecx]
-    cmp   eax , edx               ; Too far behind: drop to one buffer
-    jbe   @f
-    mov   esi , [apu_wpos]
-    sub   esi , ecx
+    sub   eax , [audio_rpos]      ; Frames available
+
+    cmp   qword [clk_seconds] , 2
+    jae   @f
+    mov   edx , [apu_wpos]        ; Clock not calibrated yet: discard
+    mov   [audio_rpos] , edx
+    jmp   .silence
   @@:
+    cmp   byte [audio_primed] , 0
+    jne   .play
+    lea   edx , [ecx+r8d]
+    cmp   eax , edx
+    jb    .silence
+    mov   byte [audio_primed] , 1
+
+  .play:
+    lea   edx , [ecx*2+ecx]
+    cmp   eax , edx               ; Too far ahead: drop to buffer + cushion
+    jbe   @f
+    mov   edx , [apu_wpos]
+    sub   edx , ecx
+    sub   edx , r8d
+    mov   [audio_rpos] , edx
+  @@:
+    mov   esi , [audio_rpos]
     mov   rdi , AUDIO_BUF
     mov   edx , [audio_last]
   .frame:
@@ -393,8 +457,9 @@ audio_update:
     mov   edx , [apu_ring+rax*4]
     inc   esi
     jmp   .store
-  .underrun:
+  .underrun:                      ; Repeat the last frame, rebuild cushion
     inc   qword [audio_underruns]
+    mov   byte [audio_primed] , 0
   .store:
     mov   [rdi] , edx
     add   rdi , 4
@@ -403,6 +468,31 @@ audio_update:
     mov   [audio_rpos] , esi
     mov   [audio_last] , edx
 
+    mov   eax , [apu_wpos]        ; Cushion error -> frame interval
+    sub   eax , esi
+    sub   eax , r8d
+    movsxd rax , eax
+    sar   rax , 2                 ; 1000 frames off -> 250 us per frame
+    cmp   rax , PACE_MAX
+    jle   @f
+    mov   rax , PACE_MAX
+  @@:
+    cmp   rax , -PACE_MAX
+    jge   @f
+    mov   rax , -PACE_MAX
+  @@:
+    mov   [pace_adjust_us] , rax
+    jmp   .give
+
+  .silence:
+    mov   rdi , AUDIO_BUF
+    xor   eax , eax
+    cld
+    rep   stosd
+    mov   [audio_last] , eax
+    mov   [pace_adjust_us] , rax
+
+  .give:
     mov   rax , 117               ; Give data for the idle buffer
     mov   rbx , 2
     mov   rcx , AUDIO_BUF
@@ -414,15 +504,57 @@ audio_update:
     ret
 
 
-; Out: rax - system time in microseconds (1 ms resolution)
+; Out: rax - wall clock time in microseconds
+;
+; The system ms timer runs slow under the VM's emulated CPU (about
+; 786 ms per second under TCG), while the RTC seconds stay correct.
+; Time is whole RTC seconds plus the timer ms since the last second
+; change, scaled by the timer rate measured over the last second.
 
 get_time_us:
+
+    call  read_timer_ms
+    mov   rsi , rax
+    mov   rax , 3                 ; Get time (RTC)
+    mov   rbx , 1
+    int   0x60
+    cmp   rax , [clk_rtc]
+    je    .scale
+    mov   [clk_rtc] , rax
+    mov   rax , rsi               ; New second
+    sub   rax , [clk_edge_ms]
+    mov   [clk_edge_ms] , rsi
+    inc   qword [clk_seconds]
+    cmp   qword [clk_seconds] , 2 ; The first interval is partial
+    jb    .scale
+    cmp   rax , 200
+    jb    .scale
+    cmp   rax , 2000
+    ja    .scale
+    mov   [clk_rate] , rax
+  .scale:
+    mov   rax , rsi
+    sub   rax , [clk_edge_ms]
+    imul  rax , rax , 1000000
+    xor   edx , edx
+    div   qword [clk_rate]
+    cmp   rax , 999999
+    jbe   @f
+    mov   rax , 999999
+  @@:
+    imul  rbx , [clk_seconds] , 1000000
+    add   rax , rbx
+    ret
+
+
+; Out: rax - system ms timer
+
+read_timer_ms:
 
     mov   rax , 26                ; Get general system info
     mov   rbx , 11
     mov   rcx , SYS_MS_TIMER
     int   0x60
-    imul  rax , rax , 1000
     ret
 
 
@@ -439,7 +571,9 @@ frame:
     sub   rbx , r13
     add   [work_us] , rbx
 
-    add   qword [next_frame_us] , FRAME_US
+    mov   rcx , [pace_adjust_us]
+    add   rcx , FRAME_US
+    add   [next_frame_us] , rcx
     cmp   [next_frame_us] , rax   ; Too far behind: resync
     jge   .scheduled
     mov   [next_frame_us] , rax
@@ -504,6 +638,11 @@ update_fps:
     je    .done
     mov   [last_time] , rax
 
+    mov   rax , [clk_rate]        ; Timer ms per wall clock second
+    mov   rdi , txt_clock.rate
+    mov   rcx , 5
+    call  write_dec
+
     mov   rax , [frame_count]
     mov   rbx , rax
     sub   rax , [last_frame_count]
@@ -521,6 +660,19 @@ update_fps:
     div   r12
   .no_frames:
     mov   qword [work_us] , 0
+    push  rax
+    xor   rax , rax               ; Average lateness per frame
+    test  r12 , r12
+    jz    @f
+    mov   rax , [late_us]
+    xor   rdx , rdx
+    div   r12
+  @@:
+    mov   qword [late_us] , 0
+    mov   rdi , txt_clock.late
+    mov   rcx , 6
+    call  write_dec
+    pop   rax
     mov   rdi , txt_fps.work
     mov   rcx , 6
     call  write_dec
@@ -590,6 +742,9 @@ draw_info:
     int   0x60
     add   rdx , LINE_H
     mov   rbx , [txt_audio_status]
+    int   0x60
+    add   rdx , LINE_H
+    mov   rbx , txt_clock
     int   0x60
     ret
 
@@ -691,8 +846,9 @@ txt_cart:       db  'Title: '
                 db  '  Size: '
   .size:        db  '00000000',0
 
-txt_error:      db  'Load error: '
-  .code:        db  '00',0
+txt_error:      db  'Load error:'     ; One code per tried path
+  .codes:       times 10 db ' ','  '
+  .end:         db  0
 
 txt_key:        db  'Key: flags '
   .flags:       db  '00'
@@ -711,16 +867,23 @@ txt_fps:        db  'Frames: '
 txt_sched:      db  'Scheduler: '
   .hz:          db  '     0 Hz',0
 
-txt_audio:      db  'Audio: 48000 Hz  buffer '
-  .bytes:       db  '    0 bytes  underrun frames '
+txt_audio:      db  'Audio: 48kHz '
+  .bytes:       db  '    0 B  underrun '
   .underruns:   db  '       0',0
 
-txt_audio_none: db  'Audio: unavailable',0
+txt_clock:      db  'Timer: '
+  .rate:        db  '    0 ms/s  late '
+  .late:        db  '     0 us',0
+
+txt_audio_none: db  'Audio: off  117/'
+  .step:        db  '  0 -> '
+  .code:        db  '0000000000000000',0
 
 txt_status:       dq  txt_error
 txt_audio_status: dq  txt_audio_none
 rom_path:         dq  rom_path_cd1
 rom_error:        dq  0
+error_log_pos:    dq  txt_error.codes+1
 rom_size:         dq  0
 frame_count:      dq  0
 last_frame_count: dq  0
@@ -728,11 +891,18 @@ last_time:        dq  0
 rom_loaded:       db  0
 next_frame_us:    dq  0
 work_us:          dq  0
+late_us:          dq  0
+clk_rtc:          dq  0
+clk_edge_ms:      dq  0               ; Timer ms at the last RTC second change
+clk_seconds:      dq  0               ; RTC second changes since start
+clk_rate:         dq  1000            ; Timer ms per second
 audio_on:         db  0
 audio_bytes:      dq  0
 audio_cur:        dq  0               ; Buffer to wait for, see audio_update
 audio_rpos:       dd  0
 audio_last:       dd  0
+audio_primed:     db  0
+pace_adjust_us:   dq  0               ; Signed, from audio_update
 audio_underruns:  dq  0
 
 param:          dq  ROM_PATH_LEN
