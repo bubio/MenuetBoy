@@ -30,6 +30,7 @@ VM の画面はホストから撮れないため、VM 上の動作確認はユ�
 ```sh
 scripts/build.sh [rom]           # MenuetOS アプリをビルドし、VM の CD イメージを作り直す（要 brew install blink xorriso mtools）
                                  # rom は ROM.GB として既定で起動、roms/ のファイルはそのままの名前で同じフォルダーに入る
+scripts/package.sh               # 配布用 zip（build/MenuetBoy-<版>.zip: MENUETBOY・README.md・LICENSE）。版は src/menuetboy.asm の VERSION
 scripts/test.sh                  # コアを Mac 上でテスト（Blargg・Mooneye のテスト ROM、dmg-acid2/halt_bug 画面比較、440Hz トーン、MBC3 RTC）
 scripts/test.sh tests/roms/02-interrupts.gb   # 1 本だけ実行
 ```
