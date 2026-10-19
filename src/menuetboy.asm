@@ -9,34 +9,33 @@
 ; Memory map (application address space)
 ;
 ;   0x000000 - image_end   code and data
-;   0x110000 - 0x169FFF    LCD output buffer (320x288, 0x00RRGGBB)
-;   0x180000 - 0x183FFF    Audio buffer handed to syscall 117
-;   0x200000 -             Emulator core state (GB_STATE_SIZE bytes)
+;   0x110000 - 0x113FFF    Audio buffer handed to syscall 117
+;   0x120000 - 0x287FFF    LCD output buffer (up to 640x576, 0x00RRGGBB)
+;   0x300000 -             Emulator core state (GB_STATE_SIZE bytes)
 ;   0x7FFFF0               stack top
 ;   0x800000 - 0xFFFFFF    ROM buffer (8MB)
 
 APP_MEMORY  = 0x1000000
 STACK_TOP   = 0x7FFFF0
-LCD_RGB     = 0x110000
-GB_STATE    = 0x200000
+LCD_RGB     = 0x120000
+GB_STATE    = 0x300000
 ROM_BUF     = 0x800000
 gb_rom      = ROM_BUF
 ROM_MAX     = 0x800000
-AUDIO_BUF   = 0x180000
+AUDIO_BUF   = 0x110000
 AUDIO_BUF_MAX = APU_RING          ; Bytes: a buffer is at most 1/4 of the ring
 
 LCD_W       = 160
 LCD_H       = 144
-VIEW_W      = LCD_W*2
-VIEW_H      = LCD_H*2
+SCALE_MAX   = 4
 
-VIEW_X      = 10                  ; LCD position in window
+MARGIN      = 10                  ; Window border to LCD and text
 VIEW_Y      = 48                  ; Below the title and menu bars
 LINE_H      = 16
-INFO_Y      = VIEW_Y+VIEW_H+8
-INFO_LINES  = 8
-WIN_W       = VIEW_W+VIEW_X*2
-WIN_H       = INFO_Y+LINE_H*INFO_LINES+8
+CHAR_W      = 6                   ; System font width, for clipping info lines
+INFO_LINES  = 2                   ; Title and save; DEBUG_LINES with debug info
+DEBUG_LINES = 8
+DEBUG_W     = 320                 ; Minimum text width with debug info
 
 BG_COLOR    = 0xFFFFFF
 TEXT_COLOR  = 0x000000
@@ -49,6 +48,8 @@ PROC_PATH   = 408                 ; Start path in process info (table 9-1)
 PATH_MAX    = 256
 MENU_OPEN   = 0x102               ; Menu IDs: menu_struct start + line
 MENU_QUIT   = 0x104
+MENU_SCALE  = 0x106               ; x1 .. x4: MENU_SCALE + scale - 1
+MENU_DEBUG  = 0x10B
 
 use64
 
@@ -105,6 +106,7 @@ START:
     call  write_dec
 
     call  audio_init
+    call  layout
     call  run_frame
     call  draw_window
     call  get_time_us
@@ -218,6 +220,11 @@ button_event:
     je    open_dialog
     cmp   rbx , MENU_QUIT
     je    .quit
+    cmp   rbx , MENU_DEBUG
+    je    .debug
+    lea   rax , [rbx-MENU_SCALE]
+    cmp   rax , SCALE_MAX
+    jb    .scale
     cmp   rbx , 0x10000001        ; Close button
     jne   main_loop
   .quit:
@@ -236,6 +243,72 @@ button_event:
   .exit:
     mov   rax , 512               ; Terminate process
     int   0x60
+
+  .scale:
+    inc   rax
+    mov   [scale] , rax
+    jmp   resize
+  .debug:
+    xor   byte [debug_info] , 1
+    jmp   resize
+
+
+; Fit the window to the new layout. The user cannot resize it.
+
+resize:
+
+    call  layout
+    mov   rax , 67                ; Window move and resize
+    mov   rbx , -1
+    mov   rcx , -1
+    mov   rdx , [win_w]
+    mov   r8  , [win_h]
+    int   0x60
+    call  draw_window
+    jmp   main_loop
+
+
+; Window and LCD sizes from scale and debug_info.
+
+layout:
+
+    mov   rax , [scale]
+    imul  rbx , rax , LCD_W
+    mov   [view_w] , rbx
+    imul  rax , rax , LCD_H
+    mov   [view_h] , rax
+    add   rax , VIEW_Y+8
+    mov   [info_y] , rax
+
+    mov   rcx , INFO_LINES        ; Body width: LCD, or wider for debug info
+    mov   rdx , rbx
+    cmp   byte [debug_info] , 0
+    je    @f
+    mov   rcx , DEBUG_LINES
+    cmp   rdx , DEBUG_W
+    jae   @f
+    mov   rdx , DEBUG_W
+  @@:
+    mov   [info_lines] , rcx
+    mov   [text_w] , rdx
+    mov   rax , rdx               ; LCD centered
+    sub   rax , rbx
+    shr   rax , 1
+    add   rax , MARGIN
+    mov   [view_x] , rax
+    mov   rax , rdx
+    xor   edx , edx
+    mov   r8 , CHAR_W
+    div   r8
+    mov   [info_chars] , rax
+    mov   rax , [text_w]
+    add   rax , MARGIN*2
+    mov   [win_w] , rax
+    imul  rcx , rcx , LINE_H
+    add   rcx , [info_y]
+    add   rcx , 8
+    mov   [win_h] , rcx
+    ret
 
 
 ; Start the system file browser as an open dialog. It sends the chosen
@@ -897,33 +970,49 @@ run_frame:
     ret
 
 
-; Convert shades to RGB at 2x scale and display.
+; Convert shades to RGB at the chosen scale and display.
 
 blit_lcd:
 
     mov   rsi , gb_lcd
     mov   rdi , LCD_RGB
+    mov   r8 , [scale]
     mov   rdx , LCD_H
   .row:
+    mov   r9 , rdi
     mov   rcx , LCD_W
   .pixel:
     movzx rax , byte [rsi]
     mov   eax , [palette+rax*4]
-    mov   [rdi] , eax
-    mov   [rdi+4] , eax
-    mov   [rdi+VIEW_W*4] , eax
-    mov   [rdi+VIEW_W*4+4] , eax
+    mov   r10 , r8
+  .repeat:
+    stosd
+    dec   r10
+    jnz   .repeat
     inc   rsi
-    add   rdi , 8
     dec   rcx
     jnz   .pixel
-    add   rdi , VIEW_W*4          ; Skip duplicated row
+    lea   r10 , [r8-1]            ; Repeat the row
+  .copy_row:
+    test  r10 , r10
+    jz    .row_done
+    push  rsi
+    mov   rsi , r9
+    mov   rcx , [view_w]
+    rep   movsd
+    pop   rsi
+    dec   r10
+    jmp   .copy_row
+  .row_done:
     dec   rdx
     jnz   .row
 
     mov   rax , 7                 ; Display image
-    mov   rbx , VIEW_X shl 32 + VIEW_W
-    mov   rcx , VIEW_Y shl 32 + VIEW_H
+    mov   rbx , [view_x]
+    shl   rbx , 32
+    add   rbx , [view_w]
+    mov   rcx , VIEW_Y shl 32
+    add   rcx , [view_h]
     mov   rdx , LCD_RGB
     mov   r8  , 0
     mov   r9  , 0x1000000
@@ -1001,9 +1090,11 @@ draw_window:
     int   0x60
 
     mov   rax , 0                 ; Draw window
-    mov   rbx , 100 shl 32 + WIN_W
-    mov   rcx , 80 shl 32 + WIN_H
-    mov   rdx , BG_COLOR
+    mov   rbx , 100 shl 32
+    add   rbx , [win_w]
+    mov   rcx , 80 shl 32
+    add   rcx , [win_h]
+    mov   rdx , 1 shl 62 + BG_COLOR ; No resizing, see resize
     mov   r8  , 1
     mov   r9  , window_label
     mov   r10 , menu_struct
@@ -1021,39 +1112,66 @@ draw_window:
 draw_info:
 
     mov   rax , 13                ; Clear info area
-    mov   rbx , VIEW_X shl 32 + VIEW_W
-    mov   rcx , INFO_Y shl 32 + LINE_H*INFO_LINES
+    mov   rbx , MARGIN shl 32
+    add   rbx , [text_w]
+    mov   rcx , [info_y]
+    shl   rcx , 32
+    mov   rdx , [info_lines]
+    imul  rdx , rdx , LINE_H
+    add   rcx , rdx
     mov   rdx , BG_COLOR
     int   0x60
 
+    mov   r12 , [info_y]
+    cmp   byte [debug_info] , 0
+    je    .short
+    mov   rbx , txt_rom
+    call  draw_line
+    mov   rbx , [txt_status]
+    call  draw_line
+    mov   rbx , txt_key
+    call  draw_line
+    mov   rbx , txt_fps
+    call  draw_line
+    mov   rbx , txt_sched
+    call  draw_line
+    mov   rbx , [txt_audio_status]
+    call  draw_line
+    mov   rbx , txt_clock
+    call  draw_line
+    mov   rbx , txt_save
+    jmp   draw_line
+  .short:
+    mov   rbx , [txt_status]
+    call  draw_line
+    mov   rbx , txt_save
+    jmp   draw_line
+
+
+; Draw text rbx at line r12, clipped to the window width. r12 moves on.
+
+draw_line:
+
+    mov   rsi , rbx
+    mov   rdi , line_buf
+    mov   rcx , [info_chars]
+  .char:
+    lodsb
+    test  al , al
+    jz    .end
+    stosb
+    dec   rcx
+    jnz   .char
+  .end:
+    mov   byte [rdi] , 0
     mov   rax , 4                 ; Display text
-    mov   rcx , VIEW_X
-    mov   rdx , INFO_Y
+    mov   rbx , line_buf
+    mov   rcx , MARGIN
+    mov   rdx , r12
     mov   rsi , TEXT_COLOR
     mov   r9  , 1
-    mov   rbx , txt_rom
     int   0x60
-    add   rdx , LINE_H
-    mov   rbx , [txt_status]
-    int   0x60
-    add   rdx , LINE_H
-    mov   rbx , txt_key
-    int   0x60
-    add   rdx , LINE_H
-    mov   rbx , txt_fps
-    int   0x60
-    add   rdx , LINE_H
-    mov   rbx , txt_sched
-    int   0x60
-    add   rdx , LINE_H
-    mov   rbx , [txt_audio_status]
-    int   0x60
-    add   rdx , LINE_H
-    mov   rbx , txt_clock
-    int   0x60
-    add   rdx , LINE_H
-    mov   rbx , txt_save
-    int   0x60
+    add   r12 , LINE_H
     ret
 
 
@@ -1119,6 +1237,13 @@ menu_struct:    dq  0                 ; Version
                 db  1 , 'Open ROM..' , 0
                 db  1 , '-' , 0
                 db  1 , 'Quit' , 0
+                db  0 , 'VIEW' , 0
+                db  1 , 'x1' , 0
+                db  1 , 'x2' , 0
+                db  1 , 'x3' , 0
+                db  1 , 'x4' , 0
+                db  1 , '-' , 0
+                db  1 , 'Debug Info' , 0
                 db  255
 
 file_browser:   db  '\sysdir\FBROWSER',0
@@ -1245,6 +1370,18 @@ save_on:          db  0
 save_due:         dq  0               ; Frame to save at, 0 = nothing to save
 
 pid:              dq  0
+scale:            dq  2
+debug_info:       db  0
+view_x:           dq  0
+view_w:           dq  0
+view_h:           dq  0
+text_w:           dq  0               ; Info text area width
+info_y:           dq  0
+info_lines:       dq  0
+info_chars:       dq  0
+win_w:            dq  0
+win_h:            dq  0
+line_buf:         times 128 db 0
 rom_file:         times PATH_MAX db 0
 drop_area:        times PATH_MAX db 0
 
@@ -1261,7 +1398,7 @@ proc_info:      times PROC_PATH+PATH_MAX db 0
 
 image_end:
 
-assert image_end <= LCD_RGB
-assert LCD_RGB + VIEW_W*VIEW_H*4 <= AUDIO_BUF
-assert AUDIO_BUF + AUDIO_BUF_MAX <= GB_STATE
+assert image_end <= AUDIO_BUF
+assert AUDIO_BUF + AUDIO_BUF_MAX <= LCD_RGB
+assert LCD_RGB + LCD_W*LCD_H*SCALE_MAX*SCALE_MAX*4 <= GB_STATE
 assert GB_STATE + GB_STATE_SIZE <= STACK_TOP - 0x10000

@@ -48,7 +48,7 @@ MenuetOS 上での動作確認は VM を再起動して CD の `/MENUETBOY/MENUE
 - `src/core/mmu.inc` — メモリマップ、MBC1/2/3/5、I/O レジスタ、OAM DMA の開始（転送は `gb_tick` で 1 M サイクル 1 バイト）。MBC3 の RTC は `gb.inc` の `rtc_tick` がエミュレーター内の時間で進める（実時間・終了中の経過は反映しない）
 - `src/core/apu.inc` — サウンド。`gb_tick` はサイクルを溜めるだけで、レジスタアクセス時などに `apu_sync` で追いつき、48kHz ステレオを `apu_ring` に書く
 - `src/core/state.inc` — 全状態を `virtual at GB_STATE` で定義。フロントエンドが `GB_STATE`・`gb_rom`・`platform_serial` を用意する
-- `src/menuetboy.asm` — MenuetOS フロントエンド。先頭にアプリ内メモリマップ。補正した時計で 59.7fps に合わせて `gb_run_frame` を呼び、`gb_lcd` を 2 倍に拡大して syscall 7 で表示し、`apu_ring` を syscall 117 のダブルバッファに流す
+- `src/menuetboy.asm` — MenuetOS フロントエンド。先頭にアプリ内メモリマップ。補正した時計で 59.7fps に合わせて `gb_run_frame` を呼び、`gb_lcd` を VIEW メニューの倍率（x1-x4、ウィンドウは利用者がリサイズできず倍率に合わせて syscall 67 で変える）で拡大して syscall 7 で表示し、`apu_ring` を syscall 117 のダブルバッファに流す
 - ROM は起動パラメータのパス（`/` で始まらなければアプリのフォルダーからの相対パス）、なければ `/CD/1/MENUETBOY/ROM.GB` から読み込む。実行中は FILE メニューの Open ROM（システムのファイルブラウザーをダイアログとして使う）とウィンドウへのドロップで切り替えられる（`docs/dev/menuetos-app.md`）
 - 電池付きカートリッジの RAM は `/FD/1/<ROM 名>.SAV` に保存する。`/FD/1` はメモリ上の写しなので MenuetOS を再起動すると消える（ディスクに残せる保存先は VM 上にない。`docs/dev/environment.md` のセーブ）。RAM への書き込みが 60 フレーム止まったときと終了時に書く。確認用 ROM は `tests/save_counter.py`
 - フレームの時間合わせは、TCG で遅れる ms タイマーを RTC の秒で補正した時計で行う（`get_time_us`）
