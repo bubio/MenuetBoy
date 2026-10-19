@@ -31,7 +31,7 @@ VIEW_W      = LCD_W*2
 VIEW_H      = LCD_H*2
 
 VIEW_X      = 10                  ; LCD position in window
-VIEW_Y      = 30
+VIEW_Y      = 48                  ; Below the title and menu bars
 LINE_H      = 16
 INFO_Y      = VIEW_Y+VIEW_H+8
 INFO_LINES  = 8
@@ -45,6 +45,10 @@ FRAME_US    = 16743               ; 70224 cycles / 4194304 Hz
 PACE_MAX    = 800                 ; Max frame interval adjustment (us)
 SAVE_DELAY  = 60                  ; Frames without cartridge RAM writes before saving
 SYS_MS_TIMER = 48*8               ; ms counter in syscall 26 general data
+PROC_PATH   = 408                 ; Start path in process info (table 9-1)
+PATH_MAX    = 256
+MENU_OPEN   = 0x102               ; Menu IDs: menu_struct start + line
+MENU_QUIT   = 0x104
 
 use64
 
@@ -67,6 +71,29 @@ START:
     mov   rbx , 1
     int   0x60
     mov   [clk_rtc] , rax
+
+    mov   rax , 111               ; Own PID, for the file dialog
+    mov   rbx , 1
+    int   0x60
+    mov   [pid] , rax
+    mov   rcx , rax               ; Own start path, for relative ROM paths
+    mov   rax , 9
+    mov   rbx , 2
+    mov   rdx , proc_info
+    mov   r8  , PROC_PATH+PATH_MAX
+    int   0x60
+    mov   byte [proc_info+PROC_PATH+PATH_MAX-1] , 0
+
+    mov   rax , 60                ; Receive the file dialog's answer
+    mov   rbx , 1
+    mov   rcx , ipc_area
+    mov   rdx , ipc_area.size
+    int   0x60
+    mov   rax , 121               ; Receive files dropped on the window
+    mov   rbx , 1
+    mov   rcx , drop_area
+    mov   rdx , PATH_MAX
+    int   0x60
 
     call  load_rom
 
@@ -187,8 +214,13 @@ button_event:
     mov   rax , 17                ; Get pressed button
     int   0x60
 
+    cmp   rbx , MENU_OPEN
+    je    open_dialog
+    cmp   rbx , MENU_QUIT
+    je    .quit
     cmp   rbx , 0x10000001        ; Close button
     jne   main_loop
+  .quit:
     cmp   qword [save_due] , 0
     je    @f
     call  write_save
@@ -206,6 +238,87 @@ button_event:
     int   0x60
 
 
+; Start the system file browser as an open dialog. It sends the chosen
+; path to ipc_area (as in the system's MOVIE.ASM), see check_open.
+
+open_dialog:
+
+    mov   rax , [pid]
+    mov   rdi , dialog_param+6    ; '[PID]', 6 decimal digits
+    mov   rbx , 10
+  .digit:
+    xor   edx , edx
+    div   rbx
+    add   dl , '0'
+    mov   [rdi] , dl
+    dec   rdi
+    cmp   rdi , dialog_param
+    ja    .digit
+    mov   qword [ipc_area] , 0    ; Unlock, empty
+    mov   qword [ipc_area+8] , 16
+    mov   rax , 256               ; Start process
+    mov   rbx , file_browser
+    mov   rcx , dialog_param
+    int   0x60
+    jmp   main_loop
+
+
+; Open a ROM chosen in the file dialog or dropped on the window.
+
+check_open:
+
+    cmp   qword [ipc_area+8] , 16
+    je    .no_dialog
+    mov   byte [ipc_area.end-1] , 0
+    mov   rsi , ipc_area+16
+    call  open_rom
+    mov   qword [ipc_area] , 0
+    mov   qword [ipc_area+8] , 16
+  .no_dialog:
+    cmp   byte [drop_area] , 0
+    je    .done
+    mov   rsi , drop_area         ; Files are separated by ';', take the first
+  .first:
+    lodsb
+    test  al , al
+    jz    .dropped
+    cmp   al , ';'
+    jne   .first
+    mov   byte [rsi-1] , 0
+  .dropped:
+    mov   byte [drop_area+PATH_MAX-1] , 0
+    mov   rsi , drop_area
+    call  open_rom
+    mov   byte [drop_area] , 0
+  .done:
+    ret
+
+
+; In : rsi - path (asciiz). Saves the running game first.
+
+open_rom:
+
+    cmp   qword [save_due] , 0
+    je    @f
+    push  rsi
+    call  write_save
+    pop   rsi
+  @@:
+    mov   byte [rom_loaded] , 0
+    mov   byte [save_on] , 0
+    mov   rdi , txt_save.text
+    mov   dword [rdi] , 'none'
+    mov   byte [rdi+4] , 0
+    mov   qword [error_log_pos] , txt_error.codes+1
+    mov   rdi , txt_error.codes
+    mov   rcx , txt_error.end-txt_error.codes
+    mov   al , ' '
+    rep   stosb
+    call  load_rom.path
+    call  draw_info
+    ret
+
+
 ; Load ROM from the start parameter, or from the first readable
 ; default path when started without a parameter.
 
@@ -213,7 +326,10 @@ load_rom:
 
     cmp   [param+8] , byte 0
     je    .defaults
-    mov   r9 , param+8
+    mov   rsi , param+8
+  .path:                          ; In: rsi - path, relative to the app's folder
+    call  resolve_path
+    mov   r9 , rom_file
     call  try_load
     jmp   .result
 
@@ -283,6 +399,54 @@ load_rom:
 
   .error:
     mov   qword [txt_status] , txt_error
+    ret
+
+
+; Copy path rsi to rom_file. A path not starting with '/' or '\'
+; (PERSIA.gb, ./PERSIA.gb) is taken as relative to the app's folder.
+
+resolve_path:
+
+    cmp   word [rsi] , './'
+    jne   @f
+    add   rsi , 2
+  @@:
+    mov   rdi , rom_file
+    mov   al , [rsi]
+    cmp   al , '/'
+    je    .copy
+    cmp   al , '\'
+    je    .copy
+    mov   rdx , rsi
+    mov   rsi , proc_info+PROC_PATH
+    mov   r8 , rdi                ; End of the folder part
+  .folder:
+    lodsb
+    test  al , al
+    jz    .folder_done
+    stosb
+    cmp   al , '/'
+    je    .separator
+    cmp   al , '\'
+    jne   .folder
+  .separator:
+    mov   r8 , rdi
+    jmp   .folder
+  .folder_done:
+    mov   rdi , r8
+    mov   rsi , rdx
+  .copy:
+    lea   rcx , [rom_file+PATH_MAX-1]
+  .char:
+    cmp   rdi , rcx
+    jae   .end
+    lodsb
+    test  al , al
+    jz    .end
+    stosb
+    jmp   .char
+  .end:
+    mov   byte [rdi] , 0
     ret
 
 
@@ -706,6 +870,7 @@ frame:
     call  run_frame
     call  blit_lcd
     call  check_save
+    call  check_open
     call  get_time_us
     mov   rbx , rax
     sub   rbx , r13
@@ -841,7 +1006,7 @@ draw_window:
     mov   rdx , BG_COLOR
     mov   r8  , 1
     mov   r9  , window_label
-    mov   r10 , 0
+    mov   r10 , menu_struct
     int   0x60
 
     call  blit_lcd
@@ -947,6 +1112,17 @@ include 'core/gb.inc'
 ; Data area
 
 window_label:   db  'MenuetBoy',0
+
+menu_struct:    dq  0                 ; Version
+                dq  0x100             ; ID of line 0, see MENU_OPEN
+                db  0 , 'FILE' , 0
+                db  1 , 'Open ROM..' , 0
+                db  1 , '-' , 0
+                db  1 , 'Quit' , 0
+                db  255
+
+file_browser:   db  '\sysdir\FBROWSER',0
+dialog_param:   db  '[000000]',0
 
 ; Key code (ASCII or extended key name) -> joypad bit
 key_map:        dd  'Righ' , 0x01
@@ -1068,8 +1244,20 @@ audio_underruns:  dq  0
 save_on:          db  0
 save_due:         dq  0               ; Frame to save at, 0 = nothing to save
 
+pid:              dq  0
+rom_file:         times PATH_MAX db 0
+drop_area:        times PATH_MAX db 0
+
+ipc_area:         dq  0               ; Lock, 0 = unlocked
+                  dq  16              ; Next free offset; data from offset 16
+                  times PATH_MAX db 0
+  .end:
+  .size = $ - ipc_area
+
 param:          dq  ROM_PATH_LEN
                 times ROM_PATH_LEN+1 db 0
+
+proc_info:      times PROC_PATH+PATH_MAX db 0
 
 image_end:
 

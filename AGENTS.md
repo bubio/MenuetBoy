@@ -49,7 +49,7 @@ MenuetOS 上での動作確認は VM を再起動して CD の `/MENUETBOY/MENUE
 - `src/core/apu.inc` — サウンド。`gb_tick` はサイクルを溜めるだけで、レジスタアクセス時などに `apu_sync` で追いつき、48kHz ステレオを `apu_ring` に書く
 - `src/core/state.inc` — 全状態を `virtual at GB_STATE` で定義。フロントエンドが `GB_STATE`・`gb_rom`・`platform_serial` を用意する
 - `src/menuetboy.asm` — MenuetOS フロントエンド。先頭にアプリ内メモリマップ。補正した時計で 59.7fps に合わせて `gb_run_frame` を呼び、`gb_lcd` を 2 倍に拡大して syscall 7 で表示し、`apu_ring` を syscall 117 のダブルバッファに流す
-- ROM は起動パラメータのパス、なければ `/CD/1/MENUETBOY/ROM.GB`（VM で確認済み）から読み込む
+- ROM は起動パラメータのパス（`/` で始まらなければアプリのフォルダーからの相対パス）、なければ `/CD/1/MENUETBOY/ROM.GB` から読み込む。実行中は FILE メニューの Open ROM（システムのファイルブラウザーをダイアログとして使う）とウィンドウへのドロップで切り替えられる（`docs/dev/menuetos-app.md`）
 - 電池付きカートリッジの RAM は `/FD/1/<ROM 名>.SAV` に保存する。`/FD/1` はメモリ上の写しなので MenuetOS を再起動すると消える（ディスクに残せる保存先は VM 上にない。`docs/dev/environment.md` のセーブ）。RAM への書き込みが 60 フレーム止まったときと終了時に書く。確認用 ROM は `tests/save_counter.py`
 - フレームの時間合わせは、TCG で遅れる ms タイマーを RTC の秒で補正した時計で行う（`get_time_us`）
 
