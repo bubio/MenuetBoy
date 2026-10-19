@@ -11,7 +11,7 @@ Menuet64 は再頒布禁止のライセンスのため（[m64l.txt](https://www.
 
 1. https://www.menuetos.net/download.htm の「M64 - 80 MB Bootable CD image」（`M64CD-1.61.00.ISO`、Google Drive）をダウンロードする
 2. `DevContainer/MenuetOS.utm/M64CD16100.ISO` として置く（ビルドのベース。手元の版の SHA-256 は `186af6eafca1904312194137f48ca67a38071574534457c8dff1e17de4a9fa60`）
-3. VM が参照する CD のリンクを作る: `mkdir -p DevContainer/MenuetOS.utm/Data && ln -s ../MenuetBoy.ISO DevContainer/MenuetOS.utm/Data/M64CD16100.ISO`
+3. VM が参照する CD のリンクを作る: `mkdir -p DevContainer/MenuetOS.utm/Data && ln -s ../MenuetBoy.ISO DevContainer/MenuetOS.utm/Data/MenuetBoy.ISO`
 
 ## ビルド
 
@@ -28,7 +28,7 @@ scripts/build.sh [rom]       # 既定の ROM は roms/dmg-acid2.gb
 | `ROM.GB` | 引数で指定した ROM。アプリが起動パラメータなしで読み込む |
 | `roms/` の各ファイル | 同じファイル名で収録（ISO9660 レベル2 なので 31 文字まで）。名前は置く人が整える。`roms/` は `dmg-acid2.gb` 以外 git の対象外 |
 
-起動フロッピーの `config.mnt` は、音声を AC97 ドライバーで有効にするよう書き換えて収録する（[apu.md](apu.md)）。
+起動フロッピーの `config.mnt` は、音声を AC97 ドライバーで有効にし（[apu.md](apu.md)）、CD `cd_1`（プライマリのマスター、`cd_1_base = 0x1f0`）を有効にするよう書き換えて収録する。CD も明示するので、起動時の選択肢 3（自動設定なし）でも `/CD/1` が見える。キーボード配列も英語（`keyboard_layout = 2` の eng。既定の 0 では `/` が `-` になる）にする。
 
 ISO は別名で書き出してから置き換えるので、VM の起動中でも実行できる。反映は VM の再起動後。
 
@@ -52,9 +52,9 @@ CD イメージの配置:
 |---|---|
 | `M64CD16100.ISO` | 公式配布 ISO（v1.61.00）。ビルドのベースで、変更しない |
 | `MenuetBoy.ISO` | ビルドで生成する ISO（公式 ISO + `/MENUETBOY/`） |
-| `Data/M64CD16100.ISO` | VM が参照する CD。上のどちらかへのシンボリックリンク（現在は `MenuetBoy.ISO`） |
+| `Data/MenuetBoy.ISO` | VM が参照する CD。`../MenuetBoy.ISO` へのシンボリックリンク |
 
-UTM はイメージを `Data/` 相対でしか参照できないため、シンボリックリンクで切り替える。
+UTM はイメージを `Data/` 相対でしか参照できないため、ビルドの出力をシンボリックリンクで参照する。
 
 - 操作: `/Applications/UTM.app/Contents/MacOS/utmctl {list|start|stop|status} MenuetOS`
 - `config.plist` を直接編集するときは UTM を終了してから行う（起動中の UTM はメモリ上の設定で上書きする）

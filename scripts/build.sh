@@ -40,8 +40,11 @@ mkdir -p "$BUILD" "$TOOLS/blinkroot"
 
 dd if="$BASE_ISO" of="$BUILD/boot.img" bs=2048 skip=$BOOT_LBA count=$BOOT_BLOCKS 2>/dev/null
 
-# Enable sound at boot: config.mnt on the boot floppy selects the Intel HDA
-# driver, disabled. Patch it in place (same length) to AC97 (the UTM device).
+# config.mnt on the boot floppy, patched in place (same length):
+# - sound with the AC97 driver (the UTM device; the default is Intel HDA, off)
+# - the CD on the primary IDE master, so boot option 3 (no
+#   auto-configuration) also sees it
+# - keyboard layout 2 = eng (0, the default, types - for /)
 python3 - "$BUILD/boot.img" <<'PATCH'
 import sys
 path = sys.argv[1]
@@ -49,7 +52,13 @@ img = open(path, 'rb').read()
 for old, new in [(b"audio_driver            = '\\SYSDIR\\DRIVER/INTELHDA'",
                   b"audio_driver            = '\\SYSDIR\\DRIVER/AC97'    "),
                  (b'audio_card_enable       = 0x00000000',
-                  b'audio_card_enable       = 0x00000001')]:
+                  b'audio_card_enable       = 0x00000001'),
+                 (b'cd_1_enable             = 0x000000',
+                  b'cd_1_enable             = 0x000001'),
+                 (b'cd_1_base               = 0x000000',
+                  b'cd_1_base               = 0x0001f0'),
+                 (b'keyboard_layout         = 00000000',
+                  b'keyboard_layout         = 00000002')]:
     assert img.count(old) == 1 and len(old) == len(new), old
     img = img.replace(old, new)
 open(path, 'wb').write(img)

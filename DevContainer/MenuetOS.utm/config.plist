@@ -27,7 +27,7 @@
 			<key>Identifier</key>
 			<string>CB8EF593-9446-4328-B1BA-1A287BAC7EDE</string>
 			<key>ImageName</key>
-			<string>M64CD16100.ISO</string>
+			<string>MenuetBoy.ISO</string>
 			<key>ImageType</key>
 			<string>CD</string>
 			<key>Interface</key>
@@ -36,20 +36,6 @@
 			<integer>1</integer>
 			<key>ReadOnly</key>
 			<true/>
-		</dict>
-		<dict>
-			<key>Identifier</key>
-			<string>D1BDAFD9-1099-4FC2-88FE-01823F7E58C3</string>
-			<key>ImageName</key>
-			<string>D1BDAFD9-1099-4FC2-88FE-01823F7E58C3.qcow2</string>
-			<key>ImageType</key>
-			<string>Disk</string>
-			<key>Interface</key>
-			<string>IDE</string>
-			<key>InterfaceVersion</key>
-			<integer>1</integer>
-			<key>ReadOnly</key>
-			<false/>
 		</dict>
 	</array>
 	<key>Information</key>
