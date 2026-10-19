@@ -16,7 +16,7 @@ Menuet64 は再頒布禁止のライセンスのため（[m64l.txt](https://www.
 ## ビルド
 
 ```sh
-brew install blink xorriso   # 初回のみ。fasm は scripts/build.sh が .tools/ に自動取得する
+brew install blink xorriso mtools   # 初回のみ。fasm は scripts/build.sh が .tools/ に自動取得する
 scripts/build.sh [rom]       # 既定の ROM は roms/dmg-acid2.gb
 ```
 
@@ -29,6 +29,14 @@ scripts/build.sh [rom]       # 既定の ROM は roms/dmg-acid2.gb
 | `roms/` の各ファイル | 同じファイル名で収録（ISO9660 レベル2 なので 31 文字まで）。名前は置く人が整える。`roms/` は `dmg-acid2.gb` 以外 git の対象外 |
 
 起動フロッピーの `config.mnt` は、音声を AC97 ドライバーで有効にし（[apu.md](apu.md)）、CD `cd_1`（プライマリのマスター、`cd_1_base = 0x1f0`）を有効にするよう書き換えて収録する。CD も明示するので、起動時の選択肢 3（自動設定なし）でも `/CD/1` が見える。キーボード配列も英語（`keyboard_layout = 2` の eng。既定の 0 では `/` が `-` になる）にする。
+
+起動フロッピーには起動用のアイコンとメニューも足す（`scripts/make_icon.py` が絵を描く）:
+
+- デスクトップ: `icon.mnt` に `M-BOY`（位置 `BD`、SETUP の下）。表示されない TRANSP の行と置き換えて 40 行を保つ
+- アイコンの絵: `i.png` の未使用（白）のセル `06` に描く。デスクトップはパスを無視して必ず `i.png` からセル番号で取るため、別の PNG は使えない
+- 起動メニュー: GAMES の先頭に `MENUETBOY`。大きいメニュー（`menul.mnt`）と小さいメニュー（`menu.mnt`）の両方に足す
+
+`icon.mnt` は 1 行 80 バイトの固定桁（位置・名前・画像:セル・コマンド）。名前は 8 文字まで表示され、位置は 4 隅の 4×4（列・行とも A-D と G-J）だけが有効（`AE` などは表示されない）。
 
 ISO は別名で書き出してから置き換えるので、VM の起動中でも実行できる。反映は VM の再起動後。
 

@@ -5,7 +5,7 @@
 #   rom: ROM loaded by default as /MENUETBOY/ROM.GB (default: roms/dmg-acid2.gb)
 # Every file in roms/ is also put in /MENUETBOY/ under its own name.
 #
-# Requires: brew install blink xorriso
+# Requires: brew install blink xorriso mtools
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -23,8 +23,8 @@ FASM=$TOOLS/fasm/fasm.x64
 BOOT_LBA=25
 BOOT_BLOCKS=720
 
-for cmd in blink xorriso; do
-    command -v $cmd >/dev/null || { echo "missing: $cmd (brew install $cmd)" >&2; exit 1; }
+for tool in blink:blink xorriso:xorriso mcopy:mtools; do
+    command -v ${tool%:*} >/dev/null || { echo "missing: ${tool%:*} (brew install ${tool#*:})" >&2; exit 1; }
 done
 
 if [ ! -x "$FASM" ]; then
@@ -63,6 +63,47 @@ for old, new in [(b"audio_driver            = '\\SYSDIR\\DRIVER/INTELHDA'",
     img = img.replace(old, new)
 open(path, 'wb').write(img)
 PATCH
+
+# Desktop icon and GAMES menu entry: the icon is drawn into an unused cell
+# of the system icon sheet i.png, and a line is added to icon.mnt and to
+# both menus (menul.mnt is the large start menu, menu.mnt the small one).
+mcopy -n -o -i "$BUILD/boot.img" ::i.png "$BUILD/i.png"
+python3 "$ROOT/scripts/make_icon.py" "$BUILD/i.png" "$BUILD/i_mboy.png"
+mcopy -n -o -i "$BUILD/boot.img" "$BUILD/i_mboy.png" ::i.png
+for f in icon.mnt menu.mnt menul.mnt; do
+    mcopy -n -o -i "$BUILD/boot.img" ::$f "$BUILD/$f"
+done
+python3 - "$BUILD" <<'LAUNCHER'
+import sys
+build = sys.argv[1]
+start = 'start /cd/1/menuetboy/menuetboy'
+icon = '/fd/1/i.png:06'
+
+def patch(name, old, new):
+    path = f'{build}/{name}'
+    text = open(path, 'rb').read()
+    assert text.count(old) == 1, (name, old)
+    open(path, 'wb').write(text.replace(old, new))
+
+# icon.mnt has fixed columns: position+12, name (up to 8 characters show),
+# image:cell, command, each ending in '-'. The desktop places icons only in
+# the four 4x4 corners (columns and rows A-D, G-J); BD is free, below SETUP.
+# The file keeps its 40 lines by taking the place of TRANSP, which the
+# desktop does not show.
+def icon_line(pos, name, image, command):
+    return (f'{pos}12 {name}'.ljust(18) + '- ' + image.ljust(20) + '- '
+            + command.ljust(35) + '-').encode()
+
+patch('icon.mnt', icon_line('GA', 'TRANSP', '/fd/1/i.png:91', '\\sysdir\\transp'),
+      icon_line('BD', 'M-BOY', icon, start))
+patch('menu.mnt', b'[SUBMENU2]\r\n', b'[SUBMENU2]\r\n'
+      + f'MENUETBOY  , APP,  {icon}, \\sysdir\\{start}\r\n'.encode())
+patch('menul.mnt', b'#GAMES\r\n', b'#GAMES\r\n'
+      + f'MENUETBOY  "MENUETBOY"    , APP,  {icon},/cd/1/sm/game10.bmp,    \\sysdir\\{start}\r\n'.encode())
+LAUNCHER
+for f in icon.mnt menu.mnt menul.mnt; do
+    mcopy -n -o -i "$BUILD/boot.img" "$BUILD/$f" ::$f
+done
 
 set -- -map "$BUILD/MENUETBOY" /MENUETBOY/MENUETBOY -map "$ROM" /MENUETBOY/ROM.GB
 for f in "$ROOT"/roms/*; do
