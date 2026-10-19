@@ -11,6 +11,8 @@
 
 APU_SAMPLE_STEP = (4194304 shl 16) / APU_RATE   ; T-cycles per sample, 16.16
 APU_GAIN        = 64              ; Max mix 4ch * 15 * 8 -> 30720
+APU_NYQUIST_STEP = (2*4194304) / (APU_RATE*32)  ; Wave step at or below this
+                                  ; many cycles: pattern above Nyquist
 
 CH_ON    = 0
 CH_DAC   = 1
@@ -20,6 +22,8 @@ CH_POS   = 4                      ; Duty step / wave sample index
 CH_LEN   = 8                      ; Length counter
 CH_TIMER = 12                     ; Cycles to the next waveform step
 CH_LFSR  = 16
+CH_AREA  = 20                     ; Wave/noise output * cycles * 32 since the
+                                  ; last sample (box filter)
 CH_SIZE  = 32
 
 ; Channel n registers are NRn0-NRn4 at 0x10+5*n (n = 0..3 for ch1-ch4).
@@ -69,6 +73,7 @@ apu_sync:
     cmp   eax , r12d
     cmova eax , r12d
     mov   r8d , eax
+    add   [apu_area_cycles] , eax
 
     test  byte [gb_io+IO_NR52] , 0x80
     jz    @f
@@ -96,7 +101,10 @@ apu_sync:
 
 ; Advance channel waveforms. In: r8d = T-cycles
 ; Square and wave advance all elapsed steps at once; noise steps one by
-; one since each step shifts the LFSR.
+; one since each step shifts the LFSR. Wave and noise also add their
+; output over the cycles to CH_AREA, so a sample is the mean over its
+; interval instead of a point sample, which aliases badly when the wave
+; channel plays sampled sound.
 
 apu_run:
 
@@ -105,11 +113,14 @@ apu_run:
   .channel:
     cmp   byte [rbx+CH_ON] , 0
     je    .next
+    cmp   ecx , 2
+    jb    .steps
+    ja    .noise
+    call  wave_area
+  .steps:
     sub   [rbx+CH_TIMER] , r8d
     jg    .next
     call  apu_period
-    cmp   ecx , 3
-    je    .noise
     mov   r9d , eax
     mov   eax , [rbx+CH_TIMER]
     neg   eax                     ; Cycles past the first step
@@ -128,8 +139,103 @@ apu_run:
     mov   [rbx+CH_POS] , al
     jmp   .next
   .noise:
-    add   [rbx+CH_TIMER] , eax
-    mov   eax , [rbx+CH_LFSR]     ; Noise: 15-bit LFSR, optionally 7-bit
+    call  noise_run
+  .next:
+    add   rbx , CH_SIZE
+    inc   ecx
+    cmp   ecx , 4
+    jb    .channel
+    ret
+
+
+; Add the wave output over r8d cycles to CH_AREA. In: rbx = ch3 state
+; Clobbers rax, rdx, rsi, r9, r10.
+
+wave_area:
+
+    push  rcx
+    call  apu_period              ; ecx = 2
+    mov   r9d , eax
+    movzx ecx , byte [gb_io+0x1C]
+    shr   ecx , 5
+    and   ecx , 3
+    jz    .done                   ; Volume code 0: mute
+    dec   ecx                     ; cl = output shift
+    cmp   r9d , APU_NYQUIST_STEP
+    jbe   .pattern
+    mov   r10d , r8d              ; Cycles left
+    mov   eax , [rbx+CH_TIMER]    ; Cycles still at the current sample
+    movzx esi , byte [rbx+CH_POS]
+  .segment:
+    cmp   eax , r10d
+    cmova eax , r10d
+    sub   r10d , eax
+    mov   edx , esi
+    shr   edx , 1
+    movzx edx , byte [gb_io+0x30+rdx]
+    test  esi , 1
+    jnz   @f
+    shr   edx , 4                 ; Even samples are the high nibble
+  @@:
+    and   edx , 0x0F
+    shr   edx , cl
+    imul  edx , eax
+    shl   edx , 5
+    add   [rbx+CH_AREA] , edx
+    test  r10d , r10d
+    jz    .done
+    inc   esi
+    and   esi , 31
+    mov   eax , r9d
+    jmp   .segment
+  .pattern:                       ; Above Nyquist: mean of the 32 samples
+    xor   edx , edx
+    xor   esi , esi
+  @@:
+    movzx eax , byte [gb_io+0x30+rsi]
+    mov   r10d , eax
+    shr   eax , 4
+    shr   eax , cl
+    add   edx , eax
+    and   r10d , 0x0F
+    shr   r10d , cl
+    add   edx , r10d
+    inc   esi
+    cmp   esi , 16
+    jb    @b
+    imul  edx , r8d
+    add   [rbx+CH_AREA] , edx
+  .done:
+    pop   rcx
+    ret
+
+
+; Advance the noise LFSR over r8d cycles and add its output to CH_AREA.
+; In: rbx = ch4 state, ecx = 3   Clobbers rax, rdx, r9, r10.
+
+noise_run:
+
+    mov   r10d , r8d              ; Cycles left
+  .segment:
+    xor   edx , edx               ; Output: volume while LFSR bit 0 is 0
+    test  byte [rbx+CH_LFSR] , 1
+    jnz   @f
+    movzx edx , byte [rbx+CH_VOL]
+  @@:
+    mov   eax , [rbx+CH_TIMER]
+    cmp   eax , r10d
+    jbe   .step
+    imul  edx , r10d
+    shl   edx , 5
+    add   [rbx+CH_AREA] , edx
+    sub   [rbx+CH_TIMER] , r10d
+    ret
+  .step:
+    imul  edx , eax
+    shl   edx , 5
+    add   [rbx+CH_AREA] , edx
+    sub   r10d , eax
+    mov   eax , [rbx+CH_LFSR]     ; 15-bit LFSR, optionally 7-bit
     mov   edx , eax
     shr   edx , 1
     xor   edx , eax
@@ -145,15 +251,10 @@ apu_run:
     or    eax , r9d
   @@:
     mov   [rbx+CH_LFSR] , eax
-    cmp   dword [rbx+CH_TIMER] , 0
-    jg    .next
     call  apu_period
-    jmp   .noise
-  .next:
-    add   rbx , CH_SIZE
-    inc   ecx
-    cmp   ecx , 4
-    jb    .channel
+    mov   [rbx+CH_TIMER] , eax
+    test  r10d , r10d
+    jnz   .segment
     ret
 
 
@@ -352,13 +453,12 @@ apu_emit:
     movzx r11d , byte [gb_io+0x25]    ; NR51 panning
     xor   ecx , ecx
     mov   rbx , apu_ch
-  .channel:
+  .channel:                       ; eax = output in 1/16 steps
     xor   eax , eax
+    cmp   ecx , 2
+    jae   .mean
     cmp   byte [rbx+CH_ON] , 0
     je    .mix
-    cmp   ecx , 2
-    je    .wave
-    ja    .noise
     lea   edx , [ecx*4+ecx]       ; Square: duty pattern bit
     movzx edx , byte [gb_io+0x11+rdx]
     shr   edx , 6
@@ -367,31 +467,16 @@ apu_emit:
     bt    edx , esi
     jnc   .mix
     movzx eax , byte [rbx+CH_VOL]
+    shl   eax , 4
     jmp   .mix
-  .wave:
-    movzx edx , byte [gb_io+0x1C]
-    shr   edx , 5
-    and   edx , 3
-    jz    .mix                    ; Volume code 0: mute
-    movzx eax , byte [rbx+CH_POS]
-    mov   esi , eax
-    shr   esi , 1
-    movzx esi , byte [gb_io+0x30+rsi]
-    test  al , 1
-    jnz   @f
-    shr   esi , 4                 ; Even samples are the high nibble
-  @@:
-    and   esi , 0x0F
-    push  rcx
-    lea   ecx , [edx-1]
-    shr   esi , cl
-    pop   rcx
-    mov   eax , esi
-    jmp   .mix
-  .noise:
-    test  byte [rbx+CH_LFSR] , 1
-    jnz   .mix
-    movzx eax , byte [rbx+CH_VOL]
+  .mean:                          ; Wave, noise: mean over the interval
+    mov   eax , [rbx+CH_AREA]
+    mov   esi , [apu_area_cycles]
+    test  esi , esi
+    jz    .mix
+    shl   esi , 1                 ; CH_AREA is in 1/32 steps
+    xor   edx , edx
+    div   esi
   .mix:
     bt    r11d , ecx
     jnc   @f
@@ -417,8 +502,12 @@ apu_emit:
     and   eax , 7
     inc   eax
     imul  r10d , eax
-    imul  r9d , r9d , APU_GAIN
-    imul  r10d , r10d , APU_GAIN
+    imul  r9d , r9d , APU_GAIN/16
+    imul  r10d , r10d , APU_GAIN/16
+    xor   eax , eax               ; Next interval
+    mov   [apu_area_cycles] , eax
+    mov   dword [apu_ch+2*CH_SIZE+CH_AREA] , eax
+    mov   dword [apu_ch+3*CH_SIZE+CH_AREA] , eax
 
     mov   rbx , apu_hpf_l         ; High-pass filter removes DC
     call  .filter

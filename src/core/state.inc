@@ -106,6 +106,7 @@ virtual at GB_STATE
   dma_next_src    dd ?
 
   apu_pending     dd ?            ; T-cycles not yet run by apu_sync
+  apu_area_cycles dd ?            ; T-cycles since the last sample
   apu_next        dd ?            ; T-cycles to the next sample, 16.16
   apu_wpos        dd ?            ; Frames written to apu_ring
   fs_step         db ?            ; Next frame sequencer step 0-7
