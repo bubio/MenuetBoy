@@ -28,8 +28,8 @@ VM の画面はホストから撮れないため、VM 上の動作確認はユ�
 ## ビルドとテスト
 
 ```sh
-scripts/build.sh [rom] [rom_dir] # MenuetOS アプリをビルドし、VM の CD イメージを作り直す（要 brew install blink xorriso）
-                                 # rom は ROM.GB として既定で起動、rom_dir の *.gb は 8.3 名（GAME.GB）で同じフォルダーに入る
+scripts/build.sh [rom]           # MenuetOS アプリをビルドし、VM の CD イメージを作り直す（要 brew install blink xorriso）
+                                 # rom は ROM.GB として既定で起動、roms/ のファイルはそのままの名前で同じフォルダーに入る
 scripts/test.sh                  # コアを Mac 上でテスト（Blargg・Mooneye のテスト ROM、dmg-acid2/halt_bug 画面比較、440Hz トーン、MBC3 RTC）
 scripts/test.sh tests/roms/02-interrupts.gb   # 1 本だけ実行
 ```

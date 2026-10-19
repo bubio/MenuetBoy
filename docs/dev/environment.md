@@ -26,7 +26,7 @@ scripts/build.sh [rom]       # 既定の ROM は roms/dmg-acid2.gb
 |---|---|
 | `MENUETBOY` | アプリ本体 |
 | `ROM.GB` | 引数で指定した ROM。アプリが起動パラメータなしで読み込む |
-| `roms/` の各ファイル | 大文字にしたファイル名で収録 |
+| `roms/` の各ファイル | 同じファイル名で収録（ISO9660 レベル2 なので 31 文字まで）。名前は置く人が整える。`roms/` は `dmg-acid2.gb` 以外 git の対象外 |
 
 起動フロッピーの `config.mnt` は、音声を AC97 ドライバーで有効にするよう書き換えて収録する（[apu.md](apu.md)）。
 

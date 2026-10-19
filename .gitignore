@@ -1,6 +1,10 @@
 # macOS
 .DS_Store
 
+# ROMs other than the test ROM are local (see docs/dev/environment.md)
+roms/*
+!roms/dmg-acid2.gb
+
 # Generated
 blink.log
 build/
