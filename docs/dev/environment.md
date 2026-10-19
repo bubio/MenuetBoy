@@ -88,8 +88,24 @@ xorriso はこの隠しイメージを引き継げないため、取り出して
 | 却下した案 | 却下理由 |
 |---|---|
 | ブートフロッピー（FAT12）に mtools で追加 | 1.44MB で空きが少なく、ROM を置く余地がない |
-| FAT32 の HDD イメージを追加 | MenuetOS 側で `config.mnt` の IDE 設定が必要。qcow2 はホストから直接書けず、raw イメージへの置き換えも要る |
+| FAT32 の HDD イメージに ROM を置く | ISO に入れれば足りる |
 | ネットワーク（FTP/HTTP）で転送 | VM 側の起動のたびに手作業の転送操作が必要 |
+
+## セーブ
+
+**結論**: セーブは `/FD/1/<ROM 名>.SAV` に書く。`/FD/1` は起動時にメモリへ読み込んだ起動フロッピーの写しなので、MenuetOS を再起動すると消える。
+VM 上でディスクに残せる保存先は見つからなかった（下表）。MenuetBoy の読み書き自体は `/FD/1` で確認済み。
+
+| 試した保存先 | 結果 |
+|---|---|
+| `/RD/1` | error 0C（読み込み専用） |
+| IDE の HDD `/HD/1`（FAT32） | 読めるが書けない（error 0A）。MenuetOS 64bit は v0.09 から IDE の FAT32 を読み込み専用で扱い、QEMU のトレースでも書き込みコマンドが出ない |
+| USB メモリ `/USB/1`（EHCI を QEMU 引数で追加） | SeaBIOS が起動時に列挙済みで、MenuetOS がポートをリセットせず認識しない（`usb_legacy_disable` も効かない） |
+| フロッピーから起動し `fd_1_write` / CACHE2FD | `/FD/1` への保存は成功するが、イメージファイルに書き込まれない（原因は未調査） |
+
+調査には `config.plist` の `QEMU.DebugLog` と `QEMU.AdditionalArguments` の `-trace`（`ide_*`、`usb_ehci_*`、`scsi_*` など）が使えた。ログは `Data/debug.log` に出る。
+
+やらないこと: 上記の原因の追究（MenuetOS と UTM/QEMU の組み合わせの問題で、MenuetBoy 側では直せない）。
 
 ## VM 上の注意
 

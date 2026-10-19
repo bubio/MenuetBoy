@@ -143,6 +143,7 @@ mem_write:
   @@:
     add   rdx , [ram_off]
     mov   [gb_cart_ram+rdx] , al
+    mov   byte [cart_ram_dirty] , 1
     ret
 
   .wram:

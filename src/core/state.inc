@@ -80,6 +80,7 @@ virtual at GB_STATE
   mbc_bank_hi     dd ?
   rom_bank_mask   dd ?
   ram_size        dd ?
+  cart_ram_dirty  db ?            ; Set on cartridge RAM writes, cleared by the frontend
   rtc_present     db ?            ; MBC3 with timer (cartridge types 0F, 10)
   rtc_latch_prev  db ?            ; Last value written to 6000-7FFF
   rtc_regs        rb 5            ; Counting S, M, H, DL, DH (bit 0 day bit 8,

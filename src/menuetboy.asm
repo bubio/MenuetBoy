@@ -34,7 +34,7 @@ VIEW_X      = 10                  ; LCD position in window
 VIEW_Y      = 30
 LINE_H      = 16
 INFO_Y      = VIEW_Y+VIEW_H+8
-INFO_LINES  = 7
+INFO_LINES  = 8
 WIN_W       = VIEW_W+VIEW_X*2
 WIN_H       = INFO_Y+LINE_H*INFO_LINES+8
 
@@ -43,6 +43,7 @@ TEXT_COLOR  = 0x000000
 
 FRAME_US    = 16743               ; 70224 cycles / 4194304 Hz
 PACE_MAX    = 800                 ; Max frame interval adjustment (us)
+SAVE_DELAY  = 60                  ; Frames without cartridge RAM writes before saving
 SYS_MS_TIMER = 48*8               ; ms counter in syscall 26 general data
 
 use64
@@ -188,6 +189,10 @@ button_event:
 
     cmp   rbx , 0x10000001        ; Close button
     jne   main_loop
+    cmp   qword [save_due] , 0
+    je    @f
+    call  write_save
+  @@:
     cmp   byte [audio_on] , 0
     je    .exit
     mov   rax , 117               ; Stop and free audio
@@ -273,6 +278,7 @@ load_rom:
     mov   qword [txt_status] , txt_cart
     mov   byte [rom_loaded] , 1
     call  gb_reset
+    call  load_save
     ret
 
   .error:
@@ -317,6 +323,139 @@ try_load:
     pop   rax
     add   qword [error_log_pos] , 3
   .logged:
+    ret
+
+
+; Battery-backed cartridge RAM is kept in /FD/1/<ROM name>.SAV. /FD/1 is the
+; in-memory copy of the boot floppy, so saves last until MenuetOS restarts.
+
+load_save:
+
+    movzx eax , byte [ROM_BUF+0x147]
+    mov   rdi , battery_types
+    mov   rcx , battery_types.count
+    repne scasb
+    jne   .done
+    cmp   dword [ram_size] , 0
+    je    .done
+    mov   byte [save_on] , 1
+
+    mov   rsi , [rom_path]        ; Name: ROM file name up to the dot
+    mov   rdi , rsi
+  .find_name:
+    lodsb
+    test  al , al
+    jz    .name_found
+    cmp   al , '/'
+    jne   .find_name
+    mov   rdi , rsi
+    jmp   .find_name
+  .name_found:
+    mov   rsi , rdi
+    mov   rdi , save_name
+    mov   rcx , 8
+  .copy_name:
+    lodsb
+    test  al , al
+    jz    .name_done
+    cmp   al , '.'
+    je    .name_done
+    stosb
+    dec   rcx
+    jnz   .copy_name
+  .name_done:
+    mov   dword [rdi] , '.SAV'
+    mov   byte [rdi+4] , 0
+
+    mov   eax , [ram_size]
+    lea   rdx , [rax+511]
+    shr   rdx , 9
+    mov   rax , 58                ; Read file
+    mov   rbx , 0
+    mov   rcx , 0
+    mov   r8  , gb_cart_ram
+    mov   r9  , save_path
+    int   0x60
+    mov   rsi , txt_save_loaded
+    test  rax , rax
+    jz    save_status
+    mov   rdi , txt_save_new.code
+    mov   rcx , 2
+    call  write_hex
+    mov   rsi , txt_save_new
+    jmp   save_status
+  .done:
+    ret
+
+
+; Save once cartridge RAM has not been written for SAVE_DELAY frames.
+
+check_save:
+
+    cmp   byte [save_on] , 0
+    je    .done
+    cmp   byte [cart_ram_dirty] , 0
+    je    .due
+    mov   byte [cart_ram_dirty] , 0
+    mov   rax , [frame_count]
+    add   rax , SAVE_DELAY
+    mov   [save_due] , rax
+    ret
+  .due:
+    mov   rax , [save_due]
+    test  rax , rax
+    jz    .done
+    cmp   rax , [frame_count]
+    ja    .done
+    call  write_save
+  .done:
+    ret
+
+
+write_save:
+
+    mov   qword [save_due] , 0
+    mov   rax , 58                ; Delete file (writing fails if it exists)
+    mov   rbx , 2
+    mov   r9  , save_path
+    int   0x60
+    mov   rax , 58                ; Write file
+    mov   rbx , 1
+    mov   rcx , 0
+    mov   edx , [ram_size]
+    mov   r8  , gb_cart_ram
+    mov   r9  , save_path
+    int   0x60
+    mov   rsi , txt_save_saved
+    test  rax , rax
+    jz    save_status
+    mov   rdi , txt_save_error.code
+    mov   rcx , 2
+    call  write_hex
+    mov   rsi , txt_save_error
+    jmp   save_status
+
+
+copy_str:                         ; Copy asciiz rsi to rdi, rdi ends at the 0
+
+    lodsb
+    stosb
+    test  al , al
+    jnz   copy_str
+    dec   rdi
+    ret
+
+
+save_status:                      ; In: rsi = status text. Line: path + status
+
+    push  rsi
+    mov   rdi , txt_save.text
+    mov   rsi , save_path
+    call  copy_str
+    mov   word [rdi] , '  '
+    add   rdi , 2
+    pop   rsi
+    call  copy_str
     ret
 
 
@@ -566,6 +705,7 @@ frame:
     mov   r13 , rax
     call  run_frame
     call  blit_lcd
+    call  check_save
     call  get_time_us
     mov   rbx , rax
     sub   rbx , r13
@@ -746,6 +886,9 @@ draw_info:
     add   rdx , LINE_H
     mov   rbx , txt_clock
     int   0x60
+    add   rdx , LINE_H
+    mov   rbx , txt_save
+    int   0x60
     ret
 
 
@@ -879,6 +1022,24 @@ txt_audio_none: db  'Audio: off  117/'
   .step:        db  '  0 -> '
   .code:        db  '0000000000000000',0
 
+txt_save:       db  'Save: '
+  .text:        db  'none'
+                times 48 db 0
+
+txt_save_new:    db  'new (read error '
+  .code:         db  '00)',0
+txt_save_loaded: db  'loaded',0
+txt_save_saved:  db  'saved',0
+txt_save_error:  db  'write error '
+  .code:         db  '00',0
+
+; Cartridge types with a battery
+battery_types:  db  0x03 , 0x06 , 0x09 , 0x0D , 0x0F , 0x10 , 0x13 , 0x1B , 0x1E
+  .count = $ - battery_types
+
+save_path:      db  '/FD/1/'
+save_name:      times 13 db 0
+
 txt_status:       dq  txt_error
 txt_audio_status: dq  txt_audio_none
 rom_path:         dq  rom_path_cd1
@@ -904,6 +1065,8 @@ audio_last:       dd  0
 audio_primed:     db  0
 pace_adjust_us:   dq  0               ; Signed, from audio_update
 audio_underruns:  dq  0
+save_on:          db  0
+save_due:         dq  0               ; Frame to save at, 0 = nothing to save
 
 param:          dq  ROM_PATH_LEN
                 times ROM_PATH_LEN+1 db 0
