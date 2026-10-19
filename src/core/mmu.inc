@@ -112,7 +112,7 @@ mem_write:
     cmp   edx , 0xFF00
     jb    .done
     cmp   edx , 0xFF80
-    jb    io_write
+    jb    .io
     cmp   edx , 0xFFFF
     jb    .hram
     mov   [gb_ie] , al
@@ -121,6 +121,14 @@ mem_write:
 
   .vram:
     mov   [gb_vram-0x8000+rdx] , al
+    ret
+
+  .io:                            ; Catch up, write, then find the next
+    call  hw_sync                 ; event again: the write may move it
+    push  rcx
+    call  io_write
+    call  hw_deadline
+    pop   rcx
     ret
 
   .cart_ram:
@@ -229,6 +237,7 @@ mbc_write:
     jne   @f
     cmp   eax , 1
     jne   @f
+    call  hw_sync
     mov   edx , dword [rtc_regs]
     mov   dword [rtc_latched] , edx
     mov   dl , [rtc_regs+4]
@@ -334,6 +343,7 @@ mbc_update:
 
 io_read:
 
+    call  hw_sync                 ; Registers show the current CPU time
     mov   eax , edx
     and   eax , 0x7F
     cmp   eax , IO_P1

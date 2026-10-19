@@ -113,10 +113,14 @@ gb_run_frame:
     push  rbx rbp r12 r13 r14 r15
     xor   r12d , r12d
   .step:
+    mov   eax , CYCLES_PER_FRAME
+    sub   eax , r12d
+    mov   [frame_left] , eax
     call  cpu_step
     add   r12d , eax
     cmp   r12d , CYCLES_PER_FRAME
     jb    .step
+    call  hw_sync
     call  apu_sync
     pop   r15 r14 r13 r12 rbp rbx
     ret
@@ -140,8 +144,67 @@ gb_set_button:
     ret
 
 
-; Advance timer and PPU.
-; In: eax = T-cycles
+; Lazy hardware sync. The CPU only counts T-cycles in sync_pending;
+; timer, PPU, DMA and RTC catch up here when sync_left (cycles to the
+; next event that can raise an interrupt or touch memory) runs out, or
+; before an I/O register access. The result is the same as advancing
+; them every M-cycle. Preserves all registers.
+
+hw_sync:
+
+    push  rax rcx rdx rsi rdi r8 r9 r10 r11
+    mov   eax , [sync_pending]
+    test  eax , eax
+    jz    @f
+    mov   dword [sync_pending] , 0
+    call  gb_tick
+  @@:
+    call  hw_deadline
+    pop   r11 r10 r9 r8 rdi rsi rdx rcx rax
+    ret
+
+
+; Set sync_left to the T-cycles until the next event: a PPU mode
+; boundary, the M-cycle TIMA overflows in, or every M-cycle during a
+; TIMA reload or OAM DMA. Clobbers rax, rcx, rdx.
+
+hw_deadline:
+
+    mov   eax , SYNC_MAX
+    test  byte [gb_io+IO_LCDC] , 0x80
+    jz    .timer
+    mov   edx , [ppu_next_dot]
+    sub   edx , [ppu_dot]
+    jg    @f
+    mov   edx , 4                 ; Boundary due now: next M-cycle
+  @@:
+    cmp   edx , eax
+    cmovb eax , edx
+  .timer:
+    cmp   byte [tima_state] , 0
+    jne   .every_mcycle
+    test  byte [gb_io+IO_TAC] , 4
+    jz    .dma
+    mov   edx , eax
+    call  tima_overflow_mcycles
+    shl   eax , 2
+    cmp   edx , eax
+    cmovb eax , edx
+  .dma:
+    cmp   byte [dma_active] , 0
+    jne   .every_mcycle
+    cmp   byte [dma_delay] , 0
+    je    .done
+  .every_mcycle:
+    mov   eax , 4
+  .done:
+    mov   [sync_left] , eax
+    ret
+
+
+; Advance timer, PPU, DMA and RTC. Mode boundaries are taken one at a
+; time, so a long step renders every line it passes.
+; In: eax = T-cycles (a multiple of 4)
 
 gb_tick:
 
@@ -157,21 +220,25 @@ gb_tick:
     call  rtc_tick
   @@:
     add   [apu_pending] , eax
-    mov   ecx , eax
-    shr   ecx , 2
-    jz    .ppu
-  .timer:
-    call  timer_mcycle
-    dec   ecx
-    jnz   .timer
+    push  rax
+    shr   eax , 2
+    call  timer_advance
+    pop   rcx
 
-  .ppu:
     test  byte [gb_io+IO_LCDC] , 0x80
     jz    .done
-    add   [ppu_dot] , eax
-    mov   edx , [ppu_dot]
-    cmp   edx , [ppu_next_dot]    ; STAT only changes at mode boundaries
-    jb    .done
+  .ppu:                           ; ecx = T-cycles left
+    mov   edx , [ppu_next_dot]
+    sub   edx , [ppu_dot]
+    jg    @f
+    mov   edx , 4                 ; Boundary due now: take it after one M-cycle
+    cmp   edx , ecx
+    cmova edx , ecx
+  @@:
+    cmp   edx , ecx
+    ja    .last
+    add   [ppu_dot] , edx
+    sub   ecx , edx
   .line:
     cmp   dword [ppu_dot] , CYCLES_PER_LINE
     jb    .stat
@@ -188,8 +255,92 @@ gb_tick:
     or    byte [gb_io+IO_IF] , 0x01   ; VBlank
     jmp   .line
   .stat:
+    push  rcx
     call  ppu_update_stat
+    pop   rcx
+    test  ecx , ecx
+    jnz   .ppu
+    ret
+  .last:
+    add   [ppu_dot] , ecx
   .done:
+    ret
+
+
+; Advance the timer by eax M-cycles: in bulk while TIMA cannot
+; overflow, one M-cycle at a time around an overflow and its reload.
+; Clobbers rax, rcx, rdx.
+
+timer_advance:
+
+    mov   ecx , eax
+  .next:
+    test  ecx , ecx
+    jz    .done
+    cmp   byte [tima_state] , 0
+    jne   .one
+    test  byte [gb_io+IO_TAC] , 4
+    jz    .div_only
+    call  tima_overflow_mcycles
+    cmp   eax , ecx
+    ja    .no_overflow
+    dec   eax                     ; Up to the overflowing M-cycle
+    sub   ecx , eax
+    call  timer_bulk
+  .one:
+    call  timer_mcycle
+    dec   ecx
+    jmp   .next
+  .no_overflow:
+    mov   eax , ecx
+    call  timer_bulk
+  .done:
+    ret
+  .div_only:
+    shl   ecx , 2
+    add   [div_counter] , ecx
+    ret
+
+
+; Advance DIV by eax M-cycles with TIMA counting but not overflowing.
+; Preserves rcx. Clobbers rax, rdx.
+
+timer_bulk:
+
+    push  rcx
+    mov   edx , [div_counter]
+    lea   eax , [rdx+rax*4]
+    mov   [div_counter] , eax
+    movzx ecx , byte [gb_io+IO_TAC]
+    and   ecx , 3
+    mov   cl , [tima_shift+rcx]
+    shr   eax , cl
+    shr   edx , cl
+    sub   eax , edx               ; Falling edges of the selected bit
+    add   [gb_io+IO_TIMA] , al
+    pop   rcx
+    ret
+
+
+; Out: eax = M-cycles until (and including) the one TIMA overflows in.
+; Only valid with the timer on and no reload pending. Preserves all but rax.
+
+tima_overflow_mcycles:
+
+    push  rcx rdx r8
+    movzx ecx , byte [gb_io+IO_TAC]
+    and   ecx , 3
+    mov   cl , [tima_shift+rcx]
+    mov   edx , [div_counter]
+    mov   eax , edx
+    shr   rax , cl
+    movzx r8d , byte [gb_io+IO_TIMA]
+    neg   r8
+    lea   rax , [rax+r8+256]      ; Counter value of the overflowing edge,
+    shl   rax , cl                ; in units of the selected bit
+    sub   rax , rdx
+    shr   rax , 2
+    pop   r8 rdx rcx
     ret
 
 
@@ -291,6 +442,7 @@ rtc_tick:
 
 rtc_write:
 
+    call  hw_sync
     mov   edx , [mbc_bank_hi]
     sub   edx , 8
     cmp   edx , 4

@@ -3,9 +3,9 @@
 ; Opcode handlers are called with ebx = opcode. They may clobber
 ; rax, rcx, rdx, rsi, rdi and add extra cycles to [op_cycles].
 ;
-; Timer and PPU advance by 4 T-cycles before each memory access
-; (cpu_read / cpu_write / cpu_idle); cycles left over when an
-; instruction ends are ticked then.
+; Each memory access (cpu_read / cpu_write / cpu_idle) is preceded by
+; 4 T-cycles, which the hardware catches up with lazily (hw_sync);
+; cycles left over when an instruction ends are counted then.
 ;
 ; 8-bit register index (opcode bits): 0 B, 1 C, 2 D, 3 E, 4 H, 5 L, 6 (HL), 7 A
 ; 16-bit register index (opcode bits 4-5): 0 BC, 1 DE, 2 HL, 3 SP (AF for push/pop)
@@ -53,7 +53,7 @@ cpu_step:
   .no_irq:
     mov   dword [op_cycles] , 4
     cmp   byte [cpu_halted] , 0
-    jne   .finish
+    jne   .halted
 
     mov   al , [cpu_ei_pending]
     mov   [cpu_ei_now] , al
@@ -73,12 +73,24 @@ cpu_step:
     cmp   byte [cpu_ei_now] , 0
     je    .finish
     mov   byte [cpu_ime] , 1
+    jmp   .finish
+
+  .halted:                        ; Nothing can wake the CPU before the next
+    mov   eax , [sync_left]       ; hardware event: skip to it (or to the
+    cmp   eax , [frame_left]      ; end of the frame)
+    cmova eax , [frame_left]
+    cmp   eax , 4
+    jbe   .finish
+    mov   [op_cycles] , eax
 
   .finish:
     mov   eax , [op_cycles]
     sub   eax , [cpu_ticked]
     jbe   @f
-    call  gb_tick
+    add   [sync_pending] , eax
+    sub   [sync_left] , eax
+    jg    @f
+    call  hw_sync
   @@:
     mov   eax , [op_cycles]
     ret
@@ -98,11 +110,10 @@ cpu_write:
 
 cpu_idle:                         ; Advance 4 T-cycles. Preserves all but flags
 
-    push  rax rcx rdx rsi rdi r8 r9 r10 r11
     add   dword [cpu_ticked] , 4
-    mov   eax , 4
-    call  gb_tick
-    pop   r11 r10 r9 r8 rdi rsi rdx rcx rax
+    add   dword [sync_pending] , 4
+    sub   dword [sync_left] , 4
+    jle   hw_sync
     ret
 
 

@@ -34,6 +34,7 @@ MBC_5       = 5
 
 CYCLES_PER_LINE  = 456
 CYCLES_PER_SEC   = 4194304
+SYNC_MAX         = 0x10000       ; Longest lazy hardware step, see hw_sync
 CYCLES_PER_FRAME = 70224
 
 APU_RATE    = 48000               ; Output sample rate
@@ -59,7 +60,10 @@ virtual at GB_STATE
   cpu_halted      db ?
   cpu_halt_bug    db ?            ; Next opcode fetch does not advance PC
   op_cycles       dd ?            ; T-cycles of the current instruction
-  cpu_ticked      dd ?            ; Of those, already passed to gb_tick
+  cpu_ticked      dd ?            ; Of those, already counted
+  sync_pending    dd ?            ; T-cycles the hardware is behind the CPU
+  sync_left       dd ?            ; T-cycles until hw_sync must run (signed)
+  frame_left      dd ?            ; T-cycles to the end of the frame
 
   div_counter     dd ?            ; DIV is bits 8-15
   tima_state      db ?            ; 0 counting, 1 overflowed (TIMA=00),

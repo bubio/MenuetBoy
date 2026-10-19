@@ -42,8 +42,8 @@ MenuetOS 上での動作確認は VM を再起動して CD の `/MENUETBOY/MENUE
 
 エミュレーターのコア（`src/core/`）はシステムコールを使わず、MenuetOS 版とテストハーネスの両方から include する。
 
-- `src/core/gb.inc` — 入口（`gb_reset` / `gb_run_frame` / `gb_set_button`）、タイマー、PPU のタイミングと STAT 割り込み
-- `src/core/cpu.inc` — SM83 インタプリタ。オペコード表 `op_table` から汎用ハンドラーへ分岐し、レジスタ番号はオペコードのビットから取り出す。メモリアクセスのたびに `cpu_read` / `cpu_write` / `cpu_idle` が 4 T サイクル分 `gb_tick` を進める（M サイクル単位のタイミング）
+- `src/core/gb.inc` — 入口（`gb_reset` / `gb_run_frame` / `gb_set_button`）、タイマー、PPU のタイミングと STAT 割り込み。ハードウェアは遅延同期（`hw_sync`）: 次のイベント（PPU のモード境界、TIMA があふれる M サイクル、DMA・リロード中は毎 M サイクル）か I/O アクセスまで CPU のサイクルを溜め、まとめて進める。結果は毎 M サイクル進めるのと同じ（画面・音声の出力が一致することを確認済み）
+- `src/core/cpu.inc` — SM83 インタプリタ。オペコード表 `op_table` から汎用ハンドラーへ分岐し、レジスタ番号はオペコードのビットから取り出す。メモリアクセスのたびに `cpu_read` / `cpu_write` / `cpu_idle` が 4 T サイクルを数える（M サイクル単位のタイミング）。HALT 中は次のイベントかフレーム末尾まで一度に進む
 - `src/core/ppu.inc` — HBlank に入るたびに 1 ライン描画（BG・ウィンドウ・オブジェクト）して `gb_lcd`（濃淡 0-3）に書く
 - `src/core/mmu.inc` — メモリマップ、MBC1/2/3/5、I/O レジスタ、OAM DMA の開始（転送は `gb_tick` で 1 M サイクル 1 バイト）。MBC3 の RTC は `gb.inc` の `rtc_tick` がエミュレーター内の時間で進める（実時間・終了中の経過は反映しない）
 - `src/core/apu.inc` — サウンド。`gb_tick` はサイクルを溜めるだけで、レジスタアクセス時などに `apu_sync` で追いつき、48kHz ステレオを `apu_ring` に書く
