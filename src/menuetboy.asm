@@ -15,6 +15,8 @@
 ;   0x7FFFF0               stack top
 ;   0x800000 - 0xFFFFFF    ROM buffer (8MB)
 
+VERSION     equ '1.0'
+
 APP_MEMORY  = 0x1000000
 STACK_TOP   = 0x7FFFF0
 LCD_RGB     = 0x120000
@@ -1229,7 +1231,7 @@ include 'core/gb.inc'
 
 ; Data area
 
-window_label:   db  'MenuetBoy',0
+window_label:   db  'MenuetBoy ',VERSION,0
 
 menu_struct:    dq  0                 ; Version
                 dq  0x100             ; ID of line 0, see MENU_OPEN
