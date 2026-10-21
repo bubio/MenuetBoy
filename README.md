@@ -1,7 +1,23 @@
 # MenuetBoy
 
+<p align="center">
+  <a href="https://github.com/bubio/MenuetBoy/releases/latest">
+    <img src="https://img.shields.io/github/v/release/bubio/MenuetBoy" alt="Latest Release">
+  </a>
+  <a href="https://github.com/bubio/MenuetBoy/blob/main/LICENSE">
+    <img src="https://img.shields.io/github/license/bubio/MenuetBoy" alt="License">
+  </a>
+  <a href="https://github.com/bubio/MenuetBoy/releases/latest">
+    <img src="https://img.shields.io/github/downloads/bubio/MenuetBoy/total.svg" alt="Downloads">
+  </a>
+</p>
+
 A GAME BOY (DMG) emulator for [MenuetOS](https://www.menuetos.net/) 64-bit,
 written in x86-64 assembly.
+
+
+<p align="center"><img src="docs/screenshot.png" alt="Prince of Persia on MenuetBoy running on MenuetOS"></p>
+
 
 - Runs original GAME BOY games (not Color or Super GAME BOY)
 - No boot ROM needed
